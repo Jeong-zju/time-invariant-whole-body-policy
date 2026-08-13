@@ -42,6 +42,8 @@ Benchmark 不应只比较最终成功率，而应逐项验证以下假设：
 
 远程部署的版本、路径、校验结果与尚未完成的闭环准入项见 [Phase -1 远程部署记录](phase-minus-1-deployment.md)。
 
+截至 2026-08-13，新 Vast.ai 实例已经从官方源完成全量部署。RTX 5090 / NVIDIA 580.126.09 上的 Isaac Sim 5.1 能正常载入场景；官方 GR00T checkpoint 也已经通过 WebSocket 完成 51-step 闭环 smoke，并生成 JSON 与视频。因此 Phase -1 的基础设施 gate 已通过，可以进入 Phase 0。第 5 项所需的逐步时间戳、Policy 延迟、底盘和关节轨迹记录器尚需补齐，并被明确列为 Phase 0 的第一个工程任务，不能在正式 baseline 实验中省略。
+
 ### 3.1 结论：主 Benchmark 选 BEHAVIOR 2026
 
 **决策**：主实验固定使用 [2026 BEHAVIOR Challenge](https://behavior.stanford.edu/challenge/index.html)，默认机器人使用 R1Pro，训练数据使用 [`behavior-1k/2026-challenge-demos`](https://huggingface.co/datasets/behavior-1k/2026-challenge-demos) 的 LeRobot v3 数据；[`2026-challenge-rawdata`](https://huggingface.co/datasets/behavior-1k/2026-challenge-rawdata) 只作为精确仿真回放和轨迹核验数据，不作为第一版训练输入。
@@ -151,7 +153,7 @@ done
 2. 可视化一条 episode 的 `base_qvel`、积分后的 current-relative SE(2)、双臂 qpos 和原始 action，确认单位、方向和索引没有错。
 3. 官方 `turning_on_radio` GR00T checkpoint 能通过 websocket 在 OmniGibson 中完成至少一次 rollout，并生成 JSON metrics 与视频；此处只验链路，不要求它成功完成任务。
 4. 固定三个 task id、数据 revision、episode split、public instance 和随机种子，并写入实验配置。
-5. evaluator 除官方 `q_score/time/distance` 外，已经能记录真实 action timestamp、Policy 返回时间、底盘轨迹和关节轨迹，以便后续计算 `E_inv`、`E_sync` 和 deadline miss。
+5. 在 Phase 0 的首次正式 baseline 前，为 evaluator 增加真实 action timestamp、Policy 返回时间、底盘轨迹和关节轨迹记录，以便后续计算 `E_inv`、`E_sync` 和 deadline miss。Phase -1 的 51-step smoke 已证明接口可运行，但不替代这项 telemetry。
 
 ### 3.6 为什么其他候选不做主 Benchmark
 
