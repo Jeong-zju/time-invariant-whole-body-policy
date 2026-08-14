@@ -17,5 +17,28 @@
     "frozen_supplement": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
     "do_not_tune": "20-39"
   },
-  "seeds": [0, 1, 2]
+  "seeds": [0, 1, 2],
+  "deployment_state": {
+    "updated_at": "2026-08-13T09:01:02Z",
+    "remote_root": "/workspace/time-invariant-whole-body-policy",
+    "remote_ssh": "ssh -p 51384 root@47.186.21.5",
+    "local_jupyter": "https://127.0.0.1:8083",
+    "status": "phase_minus_1_infrastructure_passed",
+    "gpu": "NVIDIA GeForce RTX 5090 32GB",
+    "host_driver": "580.126.09",
+    "system_cuda": "13.0",
+    "behavior_env": "/workspace/miniconda3/envs/behavior",
+    "omnigibson": "3.9.1",
+    "isaac_sim": "5.1.0.0",
+    "behavior_torch": "2.7.0+cu128",
+    "groot_policy_health": "passed",
+    "groot_service_manager": "supervisor:groot_policy_server",
+    "simulator_smoke": "passed_local_policy_instance_301",
+    "closed_loop_smoke": "passed_websocket_51_steps_with_json_and_video",
+    "telemetry": "required_before_formal_phase_0_baseline",
+    "phase_minus_1_gate": {
+      "passed": [1, 2, 3, 4],
+      "deferred_to_phase_0_before_baseline": [5]
+    }
+  }
 }

@@ -1,0 +1,131 @@
+schema_version: 1
+protocol_id: arena-g1-box-pick-place-v0
+decision_date: "2026-08-14"
+status: frozen
+
+upstream:
+  arena_repo: https://github.com/isaac-sim/IsaacLab-Arena.git
+  arena_commit: f479817431f6a02a6e40e4ea76d89203b59146d4
+  isaaclab_repo: https://github.com/isaac-sim/IsaacLab.git
+  isaaclab_commit: 3c6e67bb5c7ada942a6d1884ab69338f57596f77
+  isaaclab_version: v2.3.0
+  groot_repo: https://github.com/NVIDIA/Isaac-GR00T.git
+  groot_commit: 3bce5530b3af0ce3619d5fda041385f9b732dca8
+  dataset_repo: nvidia/Arena-G1-Loco-Manipulation-Task
+  dataset_revision: 97f7b5a4135e4e6a206d394c9b6ec0253f1558a7
+  checkpoint_repo: nvidia/GN1x-Tuned-Arena-G1-Loco-Manipulation
+  checkpoint_revision: 629479fedb1cf97c2f11ddc49eed951c5b750139
+
+runtime:
+  python: "3.11"
+  isaac_sim: 5.1.0
+  torch: 2.7.0+cu128
+  flash_attention: 2.7.4.post1
+  warp_lang: 1.8.1
+
+environment:
+  benchmark: NVIDIA Isaac Lab Arena G1 Loco-Manipulation
+  task: galileo_g1_locomanip_pick_and_place
+  object: brown_box
+  instruction: Pick up the brown box from the shelf, and place it into the blue bin on the table located at the right of the shelf.
+  robot: unitree_g1
+  embodiment: g1_wbc_joint
+  simulation_device: cpu
+  policy_device: cuda
+  headless: true
+  cameras_enabled: true
+  physics_hz: 200
+  control_hz: 50
+  decimation: 4
+  max_steps: 1200
+
+observations:
+  primary_camera: robot_head_cam_rgb
+  state_joint_space: gr00t_43dof
+  state_dimensions: 43
+
+actions:
+  model_output_dimensions: 32
+  model_output_groups:
+    left_arm_joint_position: 7
+    right_arm_joint_position: 7
+    left_hand_joint_position: 7
+    right_hand_joint_position: 7
+    base_height: 1
+    navigate_vx_vy_yaw_rate: 3
+  action_horizon: 16
+  action_chunk_length: 16
+  adapter_output_dimensions: 50
+  adapter_layout:
+    joint_slots: 43
+    navigate_vx_vy_yaw_rate: 3
+    base_height: 1
+    torso_rpy: 3
+  executed_joint_targets: 43
+  lower_body_controller: homie_v2
+  lower_body_is_not_directly_predicted_by_groot: true
+  torso_rpy_is_injected_as_zero: true
+
+data:
+  format: lerobot_v2.1
+  fps: 50
+  total_episodes: 100
+  total_frames: 94936
+  train_split: "0:100"
+  image_shape: [480, 640, 3]
+
+bm0:
+  model_family: GR00T_N1_5
+  official_checkpoint_architecture_verified_from_config: true
+  official_frozen:
+    seed: 0
+    success_rate: 1.0
+    num_episodes: 1
+    status: closed_loop_gate_passed
+  lora_100_step_smoke:
+    rank: 32
+    batch_size: 4
+    train_steps_per_second: 3.852
+    train_loss: 0.003976443680003285
+    seed: 0
+    success_rate: 1.0
+    num_episodes: 1
+    status: closed_loop_gate_passed
+  local_adaptation_profile:
+    status: frozen_protocol
+    scope: action_head_projector_and_dit
+    tune_llm: false
+    tune_visual: false
+    lora_rank: 32
+    lora_alpha: 32
+    lora_dropout: 0.1
+    learning_rate: 1.0e-4
+    batch_size: 4
+    steps_per_epoch: 23734
+    epochs: 2
+    max_optimizer_steps: 47468
+    save_steps: 5000
+    trainable_parameters: 6553600
+    trainable_fraction_percent: 0.2400
+
+evaluation:
+  max_steps: 1200
+  policy_type: gr00t_closedloop
+  require_nonzero_success: true
+  current_episode_count_is_pipeline_gate_only: true
+  smoke_gate:
+    seeds: [0]
+  development_suite:
+    seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  final_report_suite:
+    seed_start: 0
+    seed_end_inclusive: 49
+  aggregate_by_episode: true
+  confidence_interval: wilson_95
+
+legacy:
+  behavior_2026:
+    disposition: downstream_stress_test
+  mshab_settable_pick_place:
+    disposition: blocked_adapter_diagnostic
+    protocol_id: mshab-settable-pick-place-v0
