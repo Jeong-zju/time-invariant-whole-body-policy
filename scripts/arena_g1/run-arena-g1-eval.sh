@@ -9,6 +9,7 @@ policy_config="${ARENA_G1_POLICY_CONFIG:-${project_root}/configs/arena-g1-gr00t-
 num_steps="${ARENA_G1_NUM_STEPS:-1200}"
 seed="${ARENA_G1_SEED:-0}"
 run_log="${ARENA_G1_RUN_LOG:-${project_root}/logs/arena_g1_bm0/closed-loop-seed-${seed}.log}"
+script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 mkdir -p "$(dirname "${run_log}")"
 
@@ -20,7 +21,7 @@ export PYTHONUNBUFFERED=1
 
 cd "${arena_root}"
 
-"${python_bin}" isaaclab_arena/examples/policy_runner.py \
+"${python_bin}" "${script_root}/policy_runner_one_episode.py" \
     --headless \
     --device cpu \
     --policy_device cuda \

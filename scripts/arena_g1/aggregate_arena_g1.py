@@ -47,7 +47,7 @@ def main() -> None:
             raise SystemExit(f"Unexpected step budget in run {run.get('run_id')}")
         episodes = int(run["metrics"]["num_episodes"])
         success_rate = float(run["metrics"]["success_rate"])
-        if episodes <= 0 or not 0.0 <= success_rate <= 1.0:
+        if episodes != 1 or not 0.0 <= success_rate <= 1.0:
             raise SystemExit(f"Invalid metrics in run {run.get('run_id')}: {run['metrics']}")
     total_episodes = sum(int(run["metrics"]["num_episodes"]) for run in runs)
     successes = sum(
@@ -65,6 +65,7 @@ def main() -> None:
         "seeds": seeds,
         "total_episodes": total_episodes,
         "successes": successes,
+        "budget_exhausted_rollouts": sum(bool(run.get("budget_exhausted", False)) for run in runs),
         "success_rate": successes / total_episodes if total_episodes else 0.0,
         "success_rate_wilson_95": wilson(successes, total_episodes),
         "runs": [str(path) for path in args.inputs],

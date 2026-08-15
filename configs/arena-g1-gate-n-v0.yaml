@@ -1,0 +1,85 @@
+schema_version: 1
+protocol_id: arena-g1-gate-n-v0
+frozen_at: "2026-08-15"
+status: exploratory_pre_registration
+
+benchmark:
+  parent_protocol: arena-g1-box-pick-place-v0
+  dataset_revision: 97f7b5a4135e4e6a206d394c9b6ec0253f1558a7
+  episodes: 100
+  frames: 94936
+  fps: 50
+  action_horizon: 16
+
+offline_diagnostic:
+  sample_stride: 5
+  nearest_cross_episode_candidates_per_anchor: 3
+  maximum_matched_pairs: 3000
+  visual_rejection_descriptor: 16x12_rgb_area_downsample
+  speed_contrast:
+    minimum_ratio: 1.5
+    minimum_four_progress_step_direction_cosine: 0.8
+  whole_body_progress_weights:
+    base_translation_m: 1.0
+    base_yaw_characteristic_radius_m: 0.5
+    arm_joint_m_per_rad: 0.15
+    hand_joint_m_per_rad: 0.03
+    base_height_m: 1.0
+  isr_paper_default:
+    target_distance: 0.05
+    lambda_velocity: 1.0
+    lambda_acceleration: 0.01
+    arena_bimanual_extension: concatenate_left_right_wrist_positions_r6
+  sample_budget:
+    time_uniform_stride: 3
+    compare_progress_at_same_retained_count: true
+    compare_isr_at_dataset_global_median_retention_ratio: 0.3333333333333333
+
+offline_gate:
+  minimum_matched_pairs: 1000
+  minimum_same_direction_speed_contrast_pairs: 200
+  minimum_progress_median_disagreement_reduction_vs_time: 0.20
+  minimum_fraction_pairs_where_progress_beats_time: 0.60
+  maximum_critical_event_coverage_drop_vs_time_uniform: 0.05
+  maximum_geometry_reconstruction_rms_ratio_vs_time_uniform: 1.25
+  failure_action: stop_model_work_and_reassess_dataset_or_claim
+
+strong_baselines:
+  common:
+    backbone: GR00T_N1_5
+    frozen_base_checkpoint_revision: 629479fedb1cf97c2f11ddc49eed951c5b750139
+    same_training_episodes: true
+    same_optimizer_steps: true
+    same_effective_batch: true
+    same_seed_suites: true
+    same_low_level_wbc: true
+    final_adapter_only_storage: true
+  b0:
+    target: fixed_time_action_chunk
+  b1:
+    target: tempovla_style_speed_conditioned_action_chunk
+    requires_variable_speed_trajectory_augmentation: true
+    dt_only_constant_condition_is_invalid: true
+  b2:
+    target: current_relative_base_waypoint_plus_upper_body_joint_targets
+    sampling: fixed_time
+  b3:
+    target: b2_waypoint
+    sampling: whole_body_progress
+  b4:
+    target: b2_waypoint
+    sampling: isr_information_density
+  b5:
+    target: predicted_spline_parameters
+    posthoc_smoothing_of_b0_is_invalid: true
+
+closed_loop_gate:
+  smoke_seeds: [0]
+  development_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  final_seeds: "0:50"
+  max_environment_steps_at_1x: 1200
+  budget_exhaustion_counts_as_failure: true
+  stopping_rules:
+    - b1_matches_full_method
+    - b3_or_b4_captures_nearly_all_gain
+    - b5_matches_m1

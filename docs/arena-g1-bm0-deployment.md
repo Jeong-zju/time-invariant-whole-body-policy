@@ -94,6 +94,8 @@ Arena adapter 将每步扩展为 50 维：
 
 同一比较中的模型必须使用相同 seed 集、1,200 steps、CPU physics、指令、相机、action chunk 和 WBC。单次 `1/1` 不能替代开发或最终套件。
 
+每个 seed 恰好定义一次 rollout：首次 termination/truncation 后立即停止；如果运行满 1,200 steps 仍未 termination，则明确记作一次失败。Arena 上游 recorder 在这种情况下会返回 `num_episodes=0`，本项目结果 JSON 会保留该原始值到 `evaluator_metrics`，同时在用于汇总的 `metrics` 中记为 `success_rate=0, num_episodes=1`，并设置 `budget_exhausted=true`。不得把这种 rollout 从分母删除。
+
 ## 3. 资源与安全前提
 
 推荐至少：
@@ -386,7 +388,9 @@ Arena 会从 Omniverse 拉取 Galileo/G1 资产，cache 可能超过 4 GB。区�
 - 100-step LoRA 合并后，seed 0，1,200 steps：`1/1` 成功；
 - 官方冻结 checkpoint 录像复验：`1/1` 成功。
 
-这些结果只说明链路能工作。开发和最终报告仍必须运行冻结的 multi-seed suite。
+2026-08-15 使用严格的 one-rollout-per-seed 规则完成 Gate 0 正式套件：seeds `0..49` 共 50 次，成功 `44`、失败 `6`，成功率 `88.0%`，Wilson 95% CI 为 `[76.2%, 94.4%]`。失败 seeds `2, 22, 31, 32, 37, 41` 均耗尽 1,200-step budget；原始 Arena recorder 对这些运行返回 `num_episodes=0`，汇总按预注册规则各计一次失败。
+
+单 seed 结果只说明链路能工作；Gate 0 的 50-seed 结果才是后续 B1–M3 必须使用相同协议比较的正式 B0。
 
 ## 13. 版本化脚本清单
 
@@ -402,6 +406,7 @@ summarize_arena_g1.py               单次结果 JSON
 aggregate_arena_g1.py               suite 聚合与 Wilson CI
 run-arena-g1-video.sh               带录像的闭环
 policy_runner_video.py              官方 loop + POV 编码
+policy_runner_one_episode.py        首次 termination 停止；预算耗尽计失败
 run-arena-g1-train.sh               单卡 action-head LoRA
 merge_arena_g1_lora.py              安全合并 LoRA
 finalize-arena-g1-train.sh          训练完成 gate 与自动复验
