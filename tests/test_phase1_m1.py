@@ -10,13 +10,18 @@ import numpy as np
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "gate_n"))
+
+from replan_schedule import ReplanSchedule  # noqa: E402
 
 from whole_body_policy import (  # noqa: E402
+    ArenaM1PlanExecutor,
     Phase1ExecutionAdapter,
     WholeBodyPlan,
     build_multi_horizon_targets,
     compare_base_proxy_to_odometry,
     compose,
+    decode_m1_policy_output_to_simulator_chunk,
     exp,
     integrate_body_twist,
     interpolate,
@@ -25,6 +30,7 @@ from whole_body_policy import (  # noqa: E402
     log,
     relative,
     save_target_batch,
+    ordered_upper_sim_indices,
     wrap_angle,
 )
 
@@ -52,6 +58,22 @@ class SE2Test(unittest.TestCase):
         end = np.asarray([0.0, 0.0, -math.pi + 0.1])
         midpoint = interpolate(start, end, 0.5)
         self.assertAlmostEqual(abs(float(wrap_angle(midpoint[2]))), math.pi)
+
+
+class ReplanScheduleTest(unittest.TestCase):
+    def test_non_integer_fixed_frequency_has_no_long_term_tick_drift(self) -> None:
+        schedule = ReplanSchedule(control_dt_s=0.02, fixed_frequency_hz=15.0)
+        intervals = [schedule.next_steps() for _ in range(300)]
+        self.assertEqual(sum(intervals), 1000)
+        self.assertTrue(set(intervals).issubset({3, 4}))
+
+    def test_jitter_is_seeded_and_stays_inside_quantized_range(self) -> None:
+        left = ReplanSchedule(control_dt_s=0.02, jitter_frequency_hz=(10.0, 30.0), seed=7)
+        right = ReplanSchedule(control_dt_s=0.02, jitter_frequency_hz=(10.0, 30.0), seed=7)
+        left_intervals = [left.next_steps() for _ in range(100)]
+        right_intervals = [right.next_steps() for _ in range(100)]
+        self.assertEqual(left_intervals, right_intervals)
+        self.assertTrue(set(left_intervals).issubset({1, 2, 3, 4, 5}))
 
 
 class TargetBuilderTest(unittest.TestCase):
@@ -198,6 +220,85 @@ class PlanAndTrackerTest(unittest.TestCase):
             measured_base_pose_se2_w=np.asarray([1.05, 2.0, -math.pi / 2.0]),
         )
         np.testing.assert_allclose(command[29:31], [0.0, 1.0], atol=1e-12)
+
+
+class ArenaM1PlanExecutorTest(unittest.TestCase):
+    def make_executor(self) -> ArenaM1PlanExecutor:
+        return ArenaM1PlanExecutor(
+            upper_sim_indices=np.arange(11, 39),
+            query_times_s=np.asarray([0.1, 0.2]),
+            max_abs_base_twist=(2.0, 2.0, 2.0),
+        )
+
+    def test_ordered_upper_indices_follows_m1_group_order(self) -> None:
+        groups = {
+            "left_arm": ["la"],
+            "right_arm": ["ra"],
+            "left_hand": [f"lh{i}" for i in range(13)],
+            "right_hand": [f"rh{i}" for i in range(13)],
+        }
+        names = ["la", "ra", *groups["left_hand"], *groups["right_hand"]]
+        mapping = {name: index for index, name in enumerate(names)}
+        np.testing.assert_array_equal(ordered_upper_sim_indices(groups, mapping), np.arange(28))
+
+    def test_m1_decoder_maps_new_keys_without_legacy_action_names(self) -> None:
+        output = {
+            "action.phase1_upper_body_position": np.full((1, 16, 28), 0.2),
+            "action.phase1_base_height": np.full((1, 16, 1), 0.75),
+            "action.phase1_base_relative_se2": np.full((1, 16, 3), 0.1),
+        }
+        chunk = decode_m1_policy_output_to_simulator_chunk(output, np.arange(11, 39))
+        self.assertEqual(chunk.shape, (1, 16, 50))
+        np.testing.assert_allclose(chunk[..., 11:39], 0.2)
+        np.testing.assert_allclose(chunk[..., 43:46], 0.1)
+        np.testing.assert_allclose(chunk[..., 46], 0.75)
+        np.testing.assert_allclose(chunk[..., :11], 0.0)
+
+    def test_executor_reanchors_and_rewrites_only_m1_slots(self) -> None:
+        executor = self.make_executor()
+        chunk = np.zeros((2, 50), dtype=np.float64)
+        chunk[0, 11:39] = 0.1
+        chunk[1, 11:39] = 0.2
+        chunk[:, 46] = [0.8, 0.9]
+        chunk[:, 43] = [0.1, 0.2]
+        activation = executor.activate(
+            chunk,
+            measured_sim_joint_position=np.zeros(43),
+            measured_base_pose_se2_w=np.asarray([1.0, 2.0, 0.0]),
+            current_base_height_command=0.7,
+            activation_monotonic_s=10.0,
+        )
+        self.assertEqual(activation.plan_id, 0)
+        template = np.arange(50, dtype=np.float64)
+        action, diagnostic = executor.command(
+            template,
+            measured_base_pose_se2_w=np.asarray([1.0, 2.0, 0.0]),
+            monotonic_s=10.05,
+        )
+        np.testing.assert_allclose(action[11:39], 0.05)
+        self.assertAlmostEqual(action[46], 0.75)
+        self.assertAlmostEqual(action[43], 1.05)
+        np.testing.assert_allclose(action[[0, 1, 2, 47, 48, 49]], template[[0, 1, 2, 47, 48, 49]])
+        self.assertAlmostEqual(diagnostic["plan_age_s"], 0.05)
+
+    def test_executor_holds_pose_after_horizon_with_zero_feedforward(self) -> None:
+        executor = self.make_executor()
+        chunk = np.zeros((2, 50), dtype=np.float64)
+        chunk[:, 43] = [0.1, 0.2]
+        executor.activate(
+            chunk,
+            measured_sim_joint_position=np.zeros(43),
+            measured_base_pose_se2_w=np.zeros(3),
+            current_base_height_command=0.7,
+            activation_monotonic_s=1.0,
+        )
+        action, diagnostic = executor.command(
+            np.zeros(50),
+            measured_base_pose_se2_w=np.asarray([0.2, 0.0, 0.0]),
+            monotonic_s=2.0,
+        )
+        np.testing.assert_allclose(action[43:46], np.zeros(3), atol=1e-12)
+        self.assertTrue(diagnostic["clamped_to_horizon"])
 
 
 if __name__ == "__main__":

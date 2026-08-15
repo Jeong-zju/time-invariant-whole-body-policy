@@ -15,6 +15,12 @@ from .phase1 import (
     load_target_batch,
     save_target_batch,
 )
+from .arena_m1 import (
+    ArenaM1PlanExecutor,
+    PlanActivationDiagnostics,
+    decode_m1_policy_output_to_simulator_chunk,
+    ordered_upper_sim_indices,
+)
 from .se2 import (
     compose,
     exp,
@@ -34,6 +40,10 @@ __all__ = [
     "Phase1ExecutionAdapter",
     "WholeBodyPlan",
     "WholeBodyReference",
+    "ArenaM1PlanExecutor",
+    "PlanActivationDiagnostics",
+    "decode_m1_policy_output_to_simulator_chunk",
+    "ordered_upper_sim_indices",
     "build_multi_horizon_targets",
     "compare_base_proxy_to_odometry",
     "compose",

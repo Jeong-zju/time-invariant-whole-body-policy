@@ -12,7 +12,9 @@ import hashlib
 import json
 import os
 import random
+import sys
 import time
+import types
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,9 @@ import numpy as np
 import torch
 import tqdm
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
 from isaaclab_arena.cli.isaaclab_arena_cli import get_isaaclab_arena_cli_parser
 from isaaclab_arena.examples.example_environments.cli import get_arena_builder_from_cli
 from isaaclab_arena.examples.policy_runner_cli import create_policy, setup_policy_argument_parser
@@ -28,6 +33,12 @@ from isaaclab_arena.utils.isaaclab_utils.simulation_app import SimulationAppCont
 
 from action_consumers import make_consumer
 from frequency_metrics import nested_observation_sha256, summarize_trajectory, yaw_from_wxyz
+from replan_schedule import ReplanSchedule
+from whole_body_policy import (
+    ArenaM1PlanExecutor,
+    decode_m1_policy_output_to_simulator_chunk,
+    ordered_upper_sim_indices,
+)
 
 
 PROTOCOL_ID = "arena-g1-gate-n-frequency-v1"
@@ -99,16 +110,39 @@ def _register_gate_n_data_configs() -> None:
     from gr00t.experiment.data_config import DATA_CONFIG_MAP
 
     DATA_CONFIG_MAP["unitree_g1_sim_wbc_replan_dt"] = UnitreeG1SimWBCReplanDtDataConfig()
+    from whole_body_policy.groot_m1_data_config import UnitreeG1Phase1M1DataConfig
+
+    DATA_CONFIG_MAP["unitree_g1_phase1_m1"] = UnitreeG1Phase1M1DataConfig()
+
+
+def _install_m1_chunk_decoder(policy: Any, upper_sim_indices: np.ndarray) -> None:
+    """Replace Arena's legacy action-key decoder for the M1 output contract."""
+
+    def get_m1_action_chunk(self: Any, observation: dict[str, Any], camera_name: str) -> torch.Tensor:
+        policy_observations = self.get_observations(observation, camera_name)
+        decoded = self.policy.get_action(policy_observations)
+        chunk = decode_m1_policy_output_to_simulator_chunk(decoded, upper_sim_indices)
+        return torch.as_tensor(chunk, dtype=torch.float32, device=self.device)
+
+    policy.get_action_chunk = types.MethodType(get_m1_action_chunk, policy)
 
 
 def main() -> None:
     args_parser = get_isaaclab_arena_cli_parser()
     args_parser.add_argument("--telemetry_output", type=Path, required=True)
-    args_parser.add_argument("--replan_steps", type=int, required=True)
+    schedule_group = args_parser.add_mutually_exclusive_group(required=True)
+    schedule_group.add_argument("--replan_steps", type=int)
+    schedule_group.add_argument("--replan_frequency_hz", type=float)
+    schedule_group.add_argument(
+        "--jitter_frequency_hz",
+        type=float,
+        nargs=2,
+        metavar=("MIN_HZ", "MAX_HZ"),
+    )
     args_parser.add_argument("--first_chunk_reference", type=Path)
     args_parser.add_argument(
         "--consumer",
-        choices=("raw", "se2_waypoint"),
+        choices=("raw", "se2_waypoint", "phase1_m1"),
         default="raw",
     )
     args_parser.add_argument("--protocol_id", default=PROTOCOL_ID)
@@ -117,7 +151,7 @@ def main() -> None:
     with SimulationAppContext(args_cli):
         args_parser = setup_policy_argument_parser(args_parser)
         args_cli = args_parser.parse_args()
-        if args_cli.replan_steps <= 0:
+        if args_cli.replan_steps is not None and args_cli.replan_steps <= 0:
             raise ValueError("--replan_steps must be positive")
 
         arena_builder = get_arena_builder_from_cli(args_cli)
@@ -137,15 +171,35 @@ def main() -> None:
 
         obs, _ = env.reset()
         control_dt_s = float(env.unwrapped.step_dt)
-        os.environ["ARENA_G1_REPLAN_DT_S"] = str(args_cli.replan_steps * control_dt_s)
+        initial_replan_steps = args_cli.replan_steps
+        if initial_replan_steps is None:
+            requested_hz = (
+                args_cli.replan_frequency_hz
+                if args_cli.replan_frequency_hz is not None
+                else args_cli.jitter_frequency_hz[1]
+            )
+            initial_replan_steps = max(1, int(round(1.0 / (requested_hz * control_dt_s))))
+        os.environ["ARENA_G1_REPLAN_DT_S"] = str(initial_replan_steps * control_dt_s)
         _register_gate_n_data_configs()
         policy, step_budget = create_policy(args_cli)
         if not hasattr(policy, "action_chunk_length") or not hasattr(policy, "current_action_chunk"):
             raise TypeError("frequency gate requires the GR00T closed-loop chunk policy")
         action_horizon = int(policy.current_action_chunk.shape[1])
-        if args_cli.replan_steps > action_horizon:
-            raise ValueError(f"replan_steps={args_cli.replan_steps} exceeds action_horizon={action_horizon}")
-        policy.action_chunk_length = int(args_cli.replan_steps)
+        scheduler = ReplanSchedule(
+            control_dt_s=control_dt_s,
+            fixed_steps=args_cli.replan_steps,
+            fixed_frequency_hz=args_cli.replan_frequency_hz,
+            jitter_frequency_hz=(
+                tuple(args_cli.jitter_frequency_hz)
+                if args_cli.jitter_frequency_hz is not None
+                else None
+            ),
+            seed=int(args_cli.seed),
+        )
+        if initial_replan_steps > action_horizon:
+            raise ValueError(
+                f"initial replan interval={initial_replan_steps} exceeds action_horizon={action_horizon}"
+            )
         reference_first_chunk: np.ndarray | None = None
         if args_cli.first_chunk_reference is not None:
             with np.load(args_cli.first_chunk_reference) as reference_data:
@@ -158,7 +212,23 @@ def main() -> None:
 
         unwrapped = env.unwrapped
         robot = unwrapped.scene["robot"]
-        action_consumer = make_consumer(args_cli.consumer, control_dt_s)
+        action_consumer = (
+            None if args_cli.consumer == "phase1_m1" else make_consumer(args_cli.consumer, control_dt_s)
+        )
+        m1_executor = None
+        if args_cli.consumer == "phase1_m1":
+            m1_upper_indices = ordered_upper_sim_indices(
+                policy.policy_joints_config,
+                policy.robot_action_joints_config,
+            )
+            _install_m1_chunk_decoder(policy, m1_upper_indices)
+            m1_executor = ArenaM1PlanExecutor(
+                upper_sim_indices=m1_upper_indices,
+                query_times_s=np.arange(1, 17, dtype=np.float64) * control_dt_s,
+                kp_xy_per_s=1.0,
+                kp_yaw_per_s=1.0,
+                max_abs_base_twist=(0.5, 0.5, 0.5),
+            )
 
         root_position: list[np.ndarray] = [_first_env(robot.data.root_pos_w)]
         root_quaternion: list[np.ndarray] = [_first_env(robot.data.root_quat_w)]
@@ -169,6 +239,13 @@ def main() -> None:
         consumer_active_plans: list[int] = []
         consumer_position_error: list[float] = []
         consumer_yaw_error: list[float] = []
+        plan_age_s: list[float] = []
+        query_interval_index: list[int] = []
+        clamped_to_horizon: list[bool] = []
+        replan_position_jump_m: list[float] = []
+        replan_yaw_jump_rad: list[float] = []
+        replan_upper_position_jump_norm: list[float] = []
+        replan_base_velocity_jump_norm: list[float] = []
         joint_position: list[np.ndarray] = [
             _latest_first_env_observation(obs["policy"]["robot_joint_pos"], 43)
         ]
@@ -181,6 +258,7 @@ def main() -> None:
         chunk_index: list[int] = []
         new_chunk: list[bool] = []
         inference_wall_s: list[float] = []
+        scheduled_replan_steps: list[int] = []
 
         steps_executed = 0
         terminated_once = False
@@ -188,9 +266,17 @@ def main() -> None:
         first_chunk: np.ndarray | None = None
         generated_first_chunk: np.ndarray | None = None
         first_policy_observation_sha256: str | None = None
+        active_replan_steps = int(initial_replan_steps)
 
         for step in tqdm.tqdm(range(step_budget)):
             requires_chunk = bool(policy.env_requires_new_action_chunk[0].item())
+            if requires_chunk:
+                active_replan_steps = scheduler.next_steps()
+                if active_replan_steps > action_horizon:
+                    raise ValueError(
+                        f"scheduled replan interval={active_replan_steps} exceeds action_horizon={action_horizon}"
+                    )
+                policy.action_chunk_length = active_replan_steps
             selected_chunk_index = 0 if requires_chunk else int(policy.current_action_index[0].item())
             if requires_chunk and first_chunk is None:
                 # Environment creation, reset, and model loading consume global
@@ -222,9 +308,6 @@ def main() -> None:
                     actions = policy.current_action_chunk[:, 0].clone()
                 first_chunk = _numpy(policy.current_action_chunk[0]).astype(np.float32, copy=True)
 
-            raw_action_array = _first_env(actions)
-            if raw_action_array.shape != (50,):
-                raise ValueError(f"expected Arena G1 simulator action shape (50,), got {raw_action_array.shape}")
             root_position_before = _first_env(robot.data.root_pos_w)
             root_quaternion_before = _first_env(robot.data.root_quat_w)
             root_se2_before = np.asarray(
@@ -235,8 +318,38 @@ def main() -> None:
                 ],
                 dtype=np.float64,
             )
+            raw_action_array = _first_env(actions)
+            if raw_action_array.shape != (50,):
+                raise ValueError(f"expected Arena G1 simulator action shape (50,), got {raw_action_array.shape}")
             consumer_diagnostic: dict[str, float | int] = {"active_plans": 1}
-            if action_consumer is not None:
+            activation_diagnostic = None
+            if m1_executor is not None:
+                if requires_chunk:
+                    current_joint_position = _latest_first_env_observation(
+                        obs["policy"]["robot_joint_pos"], 43
+                    )
+                    current_base_height = _latest_first_env_observation(
+                        obs["action"]["base_height_cmd"], 1
+                    )[0]
+                    activation_diagnostic = m1_executor.activate(
+                        _numpy(policy.current_action_chunk[0]),
+                        measured_sim_joint_position=current_joint_position,
+                        measured_base_pose_se2_w=root_se2_before,
+                        current_base_height_command=float(current_base_height),
+                        activation_monotonic_s=time.monotonic(),
+                    )
+                executed_action, consumer_diagnostic = m1_executor.command(
+                    raw_action_array,
+                    measured_base_pose_se2_w=root_se2_before,
+                    monotonic_s=time.monotonic(),
+                )
+                actions = actions.clone()
+                actions[0] = torch.as_tensor(
+                    executed_action,
+                    dtype=actions.dtype,
+                    device=actions.device,
+                )
+            elif action_consumer is not None:
                 if requires_chunk:
                     action_consumer.add_chunk(
                         _numpy(policy.current_action_chunk[0]),
@@ -271,12 +384,32 @@ def main() -> None:
             consumer_active_plans.append(int(consumer_diagnostic["active_plans"]))
             consumer_position_error.append(float(consumer_diagnostic.get("position_error_m", 0.0)))
             consumer_yaw_error.append(float(consumer_diagnostic.get("yaw_error_rad", 0.0)))
+            plan_age_s.append(float(consumer_diagnostic.get("plan_age_s", 0.0)))
+            query_interval_index.append(int(consumer_diagnostic.get("query_interval_index", 0)))
+            clamped_to_horizon.append(bool(consumer_diagnostic.get("clamped_to_horizon", False)))
+            replan_position_jump_m.append(
+                float(activation_diagnostic.position_jump_m) if activation_diagnostic is not None else 0.0
+            )
+            replan_yaw_jump_rad.append(
+                float(activation_diagnostic.yaw_jump_rad) if activation_diagnostic is not None else 0.0
+            )
+            replan_upper_position_jump_norm.append(
+                float(activation_diagnostic.upper_position_jump_norm)
+                if activation_diagnostic is not None
+                else 0.0
+            )
+            replan_base_velocity_jump_norm.append(
+                float(activation_diagnostic.base_velocity_jump_norm)
+                if activation_diagnostic is not None
+                else 0.0
+            )
             joint_position.append(_latest_first_env_observation(obs["policy"]["robot_joint_pos"], 43))
             left_wrist_pose.append(_first_env_pose_matrix(obs["policy"]["left_wrist_pose_pelvis_frame"]))
             right_wrist_pose.append(_first_env_pose_matrix(obs["policy"]["right_wrist_pose_pelvis_frame"]))
             chunk_index.append(selected_chunk_index)
             new_chunk.append(requires_chunk)
             inference_wall_s.append(action_wall_s if requires_chunk else 0.0)
+            scheduled_replan_steps.append(active_replan_steps)
 
             steps_executed = step + 1
             terminated_once = bool(terminated.any().item())
@@ -303,9 +436,17 @@ def main() -> None:
             consumer_active_plans.pop()
             consumer_position_error.pop()
             consumer_yaw_error.pop()
+            plan_age_s.pop()
+            query_interval_index.pop()
+            clamped_to_horizon.pop()
+            replan_position_jump_m.pop()
+            replan_yaw_jump_rad.pop()
+            replan_upper_position_jump_norm.pop()
+            replan_base_velocity_jump_norm.pop()
             chunk_index.pop()
             new_chunk.pop()
             inference_wall_s.pop()
+            scheduled_replan_steps.pop()
         arrays = {
             "root_position_w": np.asarray(root_position, dtype=np.float64),
             "root_quaternion_wxyz": np.asarray(root_quaternion, dtype=np.float64),
@@ -316,12 +457,24 @@ def main() -> None:
             "consumer_active_plans": np.asarray(consumer_active_plans, dtype=np.int32),
             "consumer_position_error_m": np.asarray(consumer_position_error, dtype=np.float64),
             "consumer_yaw_error_rad": np.asarray(consumer_yaw_error, dtype=np.float64),
+            "plan_age_s": np.asarray(plan_age_s, dtype=np.float64),
+            "query_interval_index": np.asarray(query_interval_index, dtype=np.int32),
+            "clamped_to_horizon": np.asarray(clamped_to_horizon, dtype=np.bool_),
+            "replan_position_jump_m": np.asarray(replan_position_jump_m, dtype=np.float64),
+            "replan_yaw_jump_rad": np.asarray(replan_yaw_jump_rad, dtype=np.float64),
+            "replan_upper_position_jump_norm": np.asarray(
+                replan_upper_position_jump_norm, dtype=np.float64
+            ),
+            "replan_base_velocity_jump_norm": np.asarray(
+                replan_base_velocity_jump_norm, dtype=np.float64
+            ),
             "joint_position": np.asarray(joint_position, dtype=np.float64),
             "left_wrist_pose_pelvis": np.asarray(left_wrist_pose, dtype=np.float64),
             "right_wrist_pose_pelvis": np.asarray(right_wrist_pose, dtype=np.float64),
             "chunk_index": np.asarray(chunk_index, dtype=np.int32),
             "new_chunk": np.asarray(new_chunk, dtype=np.bool_),
             "inference_wall_s": np.asarray(inference_wall_s, dtype=np.float64),
+            "scheduled_replan_steps": np.asarray(scheduled_replan_steps, dtype=np.int32),
         }
         if first_chunk is None:
             raise RuntimeError("policy did not produce an action chunk")
@@ -355,12 +508,29 @@ def main() -> None:
             "protocol_id": str(args_cli.protocol_id),
             "consumer_method": str(args_cli.consumer),
             "seed": int(args_cli.seed),
-            "replan_steps": int(args_cli.replan_steps),
+            "replan_steps": int(args_cli.replan_steps) if args_cli.replan_steps is not None else None,
             "action_horizon": action_horizon,
             "control_dt_s": control_dt_s,
             "control_frequency_hz": 1.0 / control_dt_s,
-            "nominal_replan_frequency_hz": 1.0 / (control_dt_s * args_cli.replan_steps),
-            "policy_replan_delta_t_s": float(args_cli.replan_steps * control_dt_s),
+            "nominal_replan_frequency_hz": (
+                1.0 / (control_dt_s * args_cli.replan_steps)
+                if args_cli.replan_steps is not None
+                else args_cli.replan_frequency_hz
+            ),
+            "policy_replan_delta_t_s": (
+                float(args_cli.replan_steps * control_dt_s)
+                if args_cli.replan_steps is not None
+                else None
+            ),
+            "replan_schedule": {
+                **scheduler.description(),
+                "realized_calls": int(arrays["new_chunk"].sum()),
+                "realized_frequency_hz": float(
+                    arrays["new_chunk"].sum() / (steps_executed * control_dt_s)
+                ),
+                "realized_interval_steps_min": int(arrays["scheduled_replan_steps"].min()),
+                "realized_interval_steps_max": int(arrays["scheduled_replan_steps"].max()),
+            },
             "rollout": {
                 "steps_executed": steps_executed,
                 "step_budget": int(step_budget),
@@ -370,6 +540,19 @@ def main() -> None:
                 "success": success,
             },
             "metrics": metric_payload,
+            "safety": {
+                "telemetry_all_finite": bool(
+                    all(np.all(np.isfinite(value)) for value in arrays.values())
+                ),
+                "base_twist_abs_max": [
+                    float(value) for value in np.max(np.abs(arrays["navigate_command"]), axis=0)
+                ],
+                "base_twist_cap": [0.5, 0.5, 0.5],
+                "base_twist_cap_violations": int(
+                    np.count_nonzero(np.abs(arrays["navigate_command"]) > 0.500001)
+                ),
+                "unsuccessful_early_termination": bool(terminated_once and not success),
+            },
             "inference": {
                 "calls": int(arrays["new_chunk"].sum()),
                 "wall_time_total_s": float(arrays["inference_wall_s"].sum()),
@@ -377,11 +560,19 @@ def main() -> None:
             },
             "consumer": {
                 "method": str(args_cli.consumer),
-                "changes_only_base_navigation_dimensions": bool(args_cli.consumer != "raw"),
+                "changes_only_base_navigation_dimensions": bool(args_cli.consumer == "se2_waypoint"),
+                "native_m1_whole_body_tracker": bool(args_cli.consumer == "phase1_m1"),
                 "active_plan_count_median": float(np.median(arrays["consumer_active_plans"])),
                 "active_plan_count_max": int(np.max(arrays["consumer_active_plans"])),
                 "position_error_m_median": float(np.median(arrays["consumer_position_error_m"])),
                 "yaw_error_rad_median": float(np.median(arrays["consumer_yaw_error_rad"])),
+                "plan_age_s_median": float(np.median(arrays["plan_age_s"])),
+                "plan_age_s_max": float(np.max(arrays["plan_age_s"])),
+                "clamped_to_horizon_steps": int(arrays["clamped_to_horizon"].sum()),
+                "replan_position_jump_m_max": float(np.max(arrays["replan_position_jump_m"])),
+                "replan_velocity_jump_norm_max": float(
+                    np.max(arrays["replan_base_velocity_jump_norm"])
+                ),
             },
             "first_action_chunk_sha256": hashlib.sha256(first_chunk.tobytes()).hexdigest(),
             "generated_first_action_chunk_sha256": hashlib.sha256(

@@ -56,6 +56,27 @@ python3 -m unittest discover -s tests -v
 - `[判断]` 命令积分代理只适合数据 smoke。若 320 ms 局部窗口无法贴合 expert replay odometry，就必须补 measured root trajectory，不能调松门槛后继续。
 - 该判断可能错的条件：如果 Arena recorder 能从原始生成数据无损恢复每帧 root pose，直接走 measured-odometry 分支并删除 proxy 依赖。
 
+### 3.1 冻结发布物的一致性审计（远程实施时新增）
+
+2026-08-16 的逐帧审计发现，同一个冻结 dataset revision 下，预转换
+LeRobot 与完整 HDF5 不是同一批可直接拼接的轨迹：前者为 100 episodes /
+94,936 帧，后者按官方转换规则去掉每条末帧后为 100 episodes / 85,889 帧；
+第 0 个 episode 分别为 915 与 852 帧。两者不能按 episode 编号、截断或
+补帧强行 join，否则视觉、上身和 root target 会错位。
+
+实施分支因此固定为：使用冻结 Arena 官方
+`convert_hdf5_to_lerobot.py` 从完整 HDF5 重新生成严格对齐的视频、关节和
+命令，再按转换器实际的 HDF5 key 顺序注入同一轨迹的
+`obs/robot_pos` / `obs/robot_quat`。每条 episode 还要逐帧核对
+`base_height_cmd` 和 `navigate_cmd`；任一处不等即停止。发布版预转换
+LeRobot 继续保留供 B0 复现，但不得用于 M1 measured-root 监督。
+
+这一发布差异还意味着“严格删除末端不足 320 ms 的 anchor”后可训练样本数
+不再等于冻结预算推导时的 94,936。公平性优先保留预注册的 47,468 optimizer
+steps、batch 4 和全部 100 episodes；最终 manifest 必须报告数据 loader 的
+实际 epoch 数，不能继续写成数学上精确的 2.0 epochs。若未来发布方提供与
+94,936 帧 LeRobot 对齐的 root telemetry，再恢复两项同时满足的原预算。
+
 ## 4. 精确 action 契约
 
 M1 模型输出仍为：
