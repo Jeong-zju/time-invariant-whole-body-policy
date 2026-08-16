@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,30 @@ import yaml
 
 def _load(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _wilson_interval(successes: int, total: int, z: float = 1.959963984540054) -> list[float]:
+    if total <= 0:
+        return [0.0, 1.0]
+    probability = successes / total
+    denominator = 1.0 + z * z / total
+    centre = probability + z * z / (2.0 * total)
+    margin = z * math.sqrt(
+        probability * (1.0 - probability) / total + z * z / (4.0 * total * total)
+    )
+    return [(centre - margin) / denominator, (centre + margin) / denominator]
+
+
+def _numeric_summary(values: list[float]) -> dict[str, float | int | None]:
+    values = [value for value in values if math.isfinite(value)]
+    if not values:
+        return {"count": 0, "min": None, "median": None, "max": None}
+    return {
+        "count": len(values),
+        "min": float(np.min(values)),
+        "median": float(np.median(values)),
+        "max": float(np.max(values)),
+    }
 
 
 def _condition_summary(root: Path, condition: str, seeds: list[int]) -> dict[str, Any]:
@@ -37,12 +62,26 @@ def _condition_summary(root: Path, condition: str, seeds: list[int]) -> dict[str
         float(report["replan_schedule"]["realized_frequency_hz"])
         for report in reports
     ]
+    tracker_metrics = {
+        key: _numeric_summary(
+            [float(report.get("consumer", {}).get(key, float("nan"))) for report in reports]
+        )
+        for key in (
+            "plan_age_s_median",
+            "plan_age_s_max",
+            "clamped_to_horizon_steps",
+            "position_error_m_median",
+            "yaw_error_rad_median",
+            "replan_velocity_jump_norm_max",
+        )
+    }
     return {
         "condition": condition,
         "completed_runs": len(reports),
         "missing_seeds": missing,
         "successes": successes,
         "success_rate": successes / len(reports) if reports else None,
+        "success_rate_wilson_95": _wilson_interval(successes, len(reports)),
         "realized_frequency_hz": {
             "min": float(np.min(frequencies)) if frequencies else None,
             "median": float(np.median(frequencies)) if frequencies else None,
@@ -50,6 +89,80 @@ def _condition_summary(root: Path, condition: str, seeds: list[int]) -> dict[str
         },
         "unsafe_seeds": unsafe,
         "safety_checks_passed": bool(reports and not unsafe),
+        "tracker": tracker_metrics,
+    }
+
+
+def _failure_classification(
+    *,
+    default_preserved: bool,
+    checks: dict[str, Any],
+    measured_target: bool,
+    training_complete: bool,
+    safety_passed: bool,
+    extended: dict[str, Any],
+    action_horizon_s: float,
+) -> dict[str, Any]:
+    invalid_prefix_conditions = [
+        f"{50 / int(steps):g}hz"
+        for steps, value in checks.items()
+        if value["complete"] and not value["forced_prefix_valid"]
+    ]
+    failed_frequency_thresholds = [
+        f"{50 / int(steps):g}hz"
+        for steps, value in checks.items()
+        if value["complete"] and not value["below_all_thresholds"]
+    ]
+    default_tracker = extended.get("fixed-3.125hz", {}).get("tracker", {})
+    median_plan_age = default_tracker.get("plan_age_s_median", {}).get("median")
+    median_clamped_steps = default_tracker.get("clamped_to_horizon_steps", {}).get("median")
+    clock_domain_candidate = bool(
+        median_plan_age is not None
+        and median_clamped_steps is not None
+        and (
+            float(median_plan_age) > action_horizon_s
+            or float(median_clamped_steps) > 0.0
+        )
+    )
+    return {
+        "confirmed_failure_axes": {
+            "default_capability": not default_preserved,
+            "frequency_thresholds_crossed": failed_frequency_thresholds,
+            "paired_frequency_causal_validity": not invalid_prefix_conditions,
+        },
+        "passed_or_completed_checks": {
+            "measured_odometry_target": measured_target,
+            "frozen_training_budget": training_complete,
+            "material_safety": safety_passed,
+        },
+        "cross_frequency_interpretation": {
+            "invalid_prefix_conditions": invalid_prefix_conditions,
+            "status": (
+                "descriptive_differences_only_do_not_make_a_clean_frequency_causal_claim"
+                if invalid_prefix_conditions
+                else "paired_frequency_comparison_valid"
+            ),
+        },
+        "leading_diagnostic_candidate": {
+            "class": "tracker_simulation_clock_domain_mismatch",
+            "status": "candidate_not_causal_proof" if clock_domain_candidate else "not_observed",
+            "action_horizon_s": action_horizon_s,
+            "default_plan_age_s_median_across_seeds": median_plan_age,
+            "default_clamped_steps_median_across_seeds": median_clamped_steps,
+            "reason": (
+                f"The tracker queried a {action_horizon_s:g} s physical-time plan with process "
+                "wall clock while the simulator did not advance at one-to-one real time."
+                if clock_domain_candidate
+                else "The default rollout did not show plan-age or horizon-clamp evidence."
+            ),
+        },
+        "unresolved_competing_classes": [
+            "full_dataset_target_or_normalization_generalization",
+            "closed_loop_tracker_activation_and_reanchor",
+        ],
+        "next_action": (
+            "run_scoped_phase_1_clock_and_normalization_ablations_before_any_phase_2_work"
+        ),
     }
 
 
@@ -122,6 +235,22 @@ def evaluate(
         and extended_complete
         and safety_passed
     )
+    failure_classification = (
+        None
+        if passed
+        else _failure_classification(
+            default_preserved=default_preserved,
+            checks=checks,
+            measured_target=measured_target,
+            training_complete=training_complete,
+            safety_passed=safety_passed,
+            extended=extended,
+            action_horizon_s=(
+                int(config["frozen_variables"]["action_horizon"])
+                * float(config["frozen_variables"]["action_slot_dt_s"])
+            ),
+        )
+    )
     return {
         "schema_version": 1,
         "protocol_id": config["protocol_id"],
@@ -144,11 +273,13 @@ def evaluate(
             ],
             "passed": default_preserved,
         },
+        "primary_conditions": standard["conditions"],
         "primary_frequency_checks": checks,
         "deployment_frequency_checks": extended,
         "material_safety_regression_absent": safety_passed,
         "all_required_artifacts_complete": bool(extended_complete and training_complete),
         "m1_passed": passed,
+        "failure_classification": failure_classification,
         "decision": (
             "stop_and_report_action_representation_as_sufficient"
             if passed

@@ -28,7 +28,11 @@ class Phase1EvaluationTest(unittest.TestCase):
         self.matched = {"conditions": {"16": {"success_rate": 1.0}}}
         self.config = {
             "protocol_id": "arena-g1-phase-1-m1-v1",
-            "frozen_variables": {"optimizer_steps": 47468},
+            "frozen_variables": {
+                "optimizer_steps": 47468,
+                "action_horizon": 16,
+                "action_slot_dt_s": 0.02,
+            },
             "validity": {"minimum_complete_seed_pairs_per_frequency": 10},
             "resistance_thresholds": {
                 "maximum_median_root_xy_trajectory_rms_m": 0.1,
@@ -70,6 +74,37 @@ class Phase1EvaluationTest(unittest.TestCase):
             self.training,
         )
         self.assertFalse(result["m1_passed"])
+
+    def test_failure_classification_separates_evidence_from_candidate_cause(self) -> None:
+        self.standard["conditions"]["16"]["success_rate"] = 0.0
+        self.standard["paired_against_reference"]["8"][
+            "all_prebranch_physical_telemetry_identical"
+        ] = False
+        self.extended["fixed-3.125hz"] = {
+            "completed_runs": 10,
+            "safety_checks_passed": True,
+            "tracker": {
+                "plan_age_s_median": {"median": 0.40},
+                "clamped_to_horizon_steps": {"median": 706.0},
+            },
+        }
+        result = evaluate(
+            self.standard,
+            self.matched,
+            self.config,
+            self.extended,
+            self.dataset,
+            self.training,
+        )
+        classification = result["failure_classification"]
+        self.assertTrue(classification["confirmed_failure_axes"]["default_capability"])
+        self.assertFalse(
+            classification["confirmed_failure_axes"]["paired_frequency_causal_validity"]
+        )
+        self.assertEqual(
+            classification["leading_diagnostic_candidate"]["status"],
+            "candidate_not_causal_proof",
+        )
 
 
 if __name__ == "__main__":

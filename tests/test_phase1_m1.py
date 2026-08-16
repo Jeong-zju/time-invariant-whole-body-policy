@@ -280,6 +280,7 @@ class ArenaM1PlanExecutorTest(unittest.TestCase):
         self.assertAlmostEqual(action[43], 1.05)
         np.testing.assert_allclose(action[[0, 1, 2, 47, 48, 49]], template[[0, 1, 2, 47, 48, 49]])
         self.assertAlmostEqual(diagnostic["plan_age_s"], 0.05)
+        self.assertEqual(diagnostic["active_plans"], 1)
 
     def test_executor_holds_pose_after_horizon_with_zero_feedforward(self) -> None:
         executor = self.make_executor()

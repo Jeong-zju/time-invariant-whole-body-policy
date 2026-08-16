@@ -29,6 +29,24 @@ def _write(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
+def _overfit_summary(path: Path, expected_steps: int) -> dict[str, object]:
+    state = json.loads((path / "trainer_state.json").read_text(encoding="utf-8"))
+    losses = [float(entry["loss"]) for entry in state.get("log_history", []) if "loss" in entry]
+    if int(state.get("global_step", -1)) != expected_steps or not losses:
+        raise ValueError(f"incomplete overfit gate at {path}")
+    window = min(3, len(losses))
+    first = sum(losses[:window]) / window
+    last = sum(losses[-window:]) / window
+    return {
+        "path": str(path),
+        "global_step": int(state["global_step"]),
+        "first_logged_loss_mean": first,
+        "last_logged_loss_mean": last,
+        "minimum_logged_loss": min(losses),
+        "loss_decreased": bool(last < first),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-output", type=Path, required=True)
@@ -74,6 +92,7 @@ def main() -> None:
         "global_step": global_step,
         "reported_epoch": float(state.get("epoch", 0.0)),
         "optimizer_steps_frozen": args.expected_steps,
+        "training_seed": 42,
         "batch_size": 4,
         "learning_rate": 1.0e-4,
         "lora": {"rank": 32, "alpha": 32, "dropout": 0.1},
@@ -82,6 +101,12 @@ def main() -> None:
         "first_logged_loss": float(loss_entries[0]["loss"]),
         "last_logged_loss": float(loss_entries[-1]["loss"]),
         "minimum_logged_loss": min(float(entry["loss"]) for entry in loss_entries),
+        "overfit_gates": {
+            "single_batch": _overfit_summary(args.train_output.parent / "batch_overfit", 200),
+            "single_episode": _overfit_summary(
+                args.train_output.parent / "episode_0_overfit", 1000
+            ),
+        },
         "adapter_sha256": _sha256(adapter_path),
         "dataset_manifest_sha256": _sha256(args.dataset_manifest),
         "upstream": {

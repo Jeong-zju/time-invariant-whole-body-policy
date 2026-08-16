@@ -301,3 +301,83 @@ artifacts/validation/arena-g1-phase-1-m1/
 - proxy artifact 仍标为 proxy；
 - 没有修改冻结 seed、1,200-step budget 或 Gate N 门槛；
 - 没有启动 Phase 2/3 范围的工作。
+
+## 11. 2026-08-16 远程执行记录
+
+本节是一次已完成运行的机器交接，不改变第 1–10 节的预注册契约。远端项目根目录为 `/workspace/time-invariant-whole-body-policy`；训练、合并和评测 Supervisor job 均已正常退出。宿主机驱动和已有 Jupyter 服务未改动。
+
+### 11.1 数据与训练
+
+```yaml
+dataset_revision: 97f7b5a4135e4e6a206d394c9b6ec0253f1558a7
+episodes: 100
+frames: 85889
+valid_anchors: 84289
+target_source_counts:
+  measured_odometry: 84289
+proxy_gate: failed_100_of_100_do_not_use
+dataset_manifest_sha256: 6d275fda73b2fcca106fea993d63a2a667375790a410d7345d1819258f91dbad
+
+training_seed: 42  # upstream trainer RNG is hard-coded; rollout smoke remains seed 0
+optimizer_steps: 47468
+reported_epoch: 2.252550657239121
+batch_size: 4
+learning_rate: 0.0001
+lora: {rank: 32, alpha: 32, dropout: 0.1}
+first_logged_loss: 2.5935
+last_logged_loss: 0.0278
+minimum_logged_loss: 0.0074
+adapter_sha256: a08fb841f82c59a37657b751c96c3c2844f0533095ce17ffca00f0fb8e2ab85f
+training_manifest_sha256: da5a0b5bee9ec9024f8057c436b3201208e38b1a2e14346f37dd90bad0a340b5
+merged_checkpoint: checkpoints/arena_g1/phase_1_m1/merged  # 7.1 GB, safe_merge=true
+```
+
+数据审计裁决：冻结发布的预转换 LeRobot 与完整 HDF5 不是逐 episode 对齐的同一转换物，禁止 join。正式训练集由 HDF5 按官方转换流程重建视觉/关节/root pose，再构造 measured-odometry M1 target。原始 HDF5 在派生数据和 manifest 校验完成后从远端工作盘移除以回收约 23 GB；可从冻结 revision 重新下载，不是唯一副本。
+
+过拟合门禁：single-batch 为 200/200 steps，loss 最小 0.2244；single-episode 为 1,000/1,000 steps，loss 最小 0.0669。单 episode 模型的解码输出为有限 `16×32`，上身/base-height/base-XY/base-yaw RMSE 分别为 `0.067176 rad / 0.004089 m / 0.010582 m / 0.007558 rad`。
+
+### 11.2 正式评测与故障分类
+
+共完成 80/80 条 1,200-step rollout：10 seeds 乘以 `fixed-3.125hz`、`fixed-6.25hz`、`fixed-12.5hz`、`fixed-10hz`、`fixed-15hz`、`fixed-20hz`、`fixed-30hz`、`jitter-10-30hz`。逐条 JSON/NPZ 均存在且有限，无 base-twist cap violation、无失败回合提前终止。8 个条件均为 0/10 成功，单条件 Wilson 95% CI 均为 `[0, 0.277533]`；matched LoRA 默认参考为 10/10。
+
+```yaml
+m1_passed: false
+decision: stop_and_classify_phase_1_m1_failure_before_any_phase_2_work
+confirmed_failure_axes:
+  default_capability: true                # 10/10 -> 0/10; allowed drop only 10 pp
+  frequency_thresholds_crossed: [6.25hz, 12.5hz]
+  paired_frequency_causal_validity: false # physical prefix was not bit-identical
+material_safety_regression_absent: true
+
+paired_descriptive_medians:
+  6.25hz: {root_xy_rms_m: 0.329546, root_yaw_rms_rad: 0.897474}
+  12.5hz: {root_xy_rms_m: 0.599251, root_yaw_rms_rad: 1.009539}
+
+leading_diagnostic_candidate:
+  class: tracker_simulation_clock_domain_mismatch
+  status: candidate_not_causal_proof
+  route_horizon_s: 0.32
+  default_plan_age_s_median_across_seeds: 0.400942
+  default_clamped_steps_median_across_seeds: 705.5
+unresolved_competing_classes:
+  - full_dataset_target_or_normalization_generalization
+  - closed_loop_tracker_activation_and_reanchor
+next_action: run_scoped_phase_1_clock_and_normalization_ablations_before_any_phase_2_work
+```
+
+首个 action chunk 的 SHA 在每个 seed 的配对条件间一致，但首观测 hash 和分叉前 root/joint/wrist/command telemetry 不一致。M1 tracker 按进程 wall clock 查询，fresh simulator process 并非严格 1× real time，因此“相同离散 chunk”不保证“相同已执行前缀”。不得用当前 paired RMS 宣称重规划频率造成了因果差异。若未来继续该诊断，必须在不改变阈值的前提下统一仿真物理时间与 tracker 查询时钟，或冻结并重放已执行的 control prefix；这属于 Phase 1 protocol repair/ablation，不是 Phase 2。
+
+### 11.3 Artifact 索引
+
+```text
+artifacts/phase_1_m1/dataset-manifest.json
+checkpoints/arena_g1/phase_1_m1/training-manifest.json
+checkpoints/arena_g1/phase_1_m1/merged/
+artifacts/phase_1_m1/overfit/episode-000-model.json
+artifacts/phase_1_m1/overfit/episode-000-model.png
+artifacts/validation/arena-g1-phase-1-m1/report.json
+artifacts/validation/arena-g1-phase-1-m1/gate-evaluation.json
+artifacts/validation/arena-g1-phase-1-m1/{fixed-*,jitter-10-30hz}/seed-*/rollout.{json,npz,log}
+```
+
+最终 report SHA-256 为 `81c4de7f3ece82eef403e47a51de4cdfd8b48289625a60c6d29ae683809095be`；gate-evaluation SHA-256 为 `c6ba32581d2a7b83472356b6d633d3035cedc2eb559780ac4140b93429c42db3`。两者对应本节数值；重新生成 gate artifact 后必须同步更新 checksum。

@@ -208,6 +208,7 @@ class ArenaM1PlanExecutor:
         interval = int(np.searchsorted(self.query_times_s, elapsed, side="right"))
         diagnostic = {
             **diagnostic,
+            "active_plans": 1,
             "plan_id": self.plan_id,
             "plan_age_s": elapsed,
             "query_interval_index": min(interval, len(self.query_times_s)),

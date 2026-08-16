@@ -29,6 +29,15 @@ from whole_body_policy import load_target_batch  # noqa: E402
 from whole_body_policy.groot_m1_data_config import UnitreeG1Phase1M1DataConfig  # noqa: E402
 
 
+def _decoded_matrix(value: object, width: int, name: str) -> np.ndarray:
+    array = np.asarray(value)
+    if width == 1 and array.ndim == 1:
+        array = array[:, None]
+    if array.shape != (16, width):
+        raise ValueError(f"decoded {name} must have shape {(16, width)}, got {array.shape}")
+    return array
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path, required=True)
@@ -72,9 +81,13 @@ def main() -> None:
     prediction_dict = policy.get_action(observations)
     predicted = np.concatenate(
         [
-            np.asarray(prediction_dict["action.phase1_upper_body_position"]),
-            np.asarray(prediction_dict["action.phase1_base_height"]),
-            np.asarray(prediction_dict["action.phase1_base_relative_se2"]),
+            _decoded_matrix(
+                prediction_dict["action.phase1_upper_body_position"], 28, "upper body"
+            ),
+            _decoded_matrix(prediction_dict["action.phase1_base_height"], 1, "base height"),
+            _decoded_matrix(
+                prediction_dict["action.phase1_base_relative_se2"], 3, "base SE(2)"
+            ),
         ],
         axis=-1,
     ).astype(np.float64)

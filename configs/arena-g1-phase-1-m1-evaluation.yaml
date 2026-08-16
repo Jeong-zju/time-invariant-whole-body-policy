@@ -4,7 +4,7 @@ frozen_at: "2026-08-16"
 
 frozen_variables:
   model: gr00t_n1.5_phase_1_m1
-  training_seed: 0
+  training_seed: 42
   optimizer_steps: 47468
   batch_size: 4
   learning_rate: 0.0001

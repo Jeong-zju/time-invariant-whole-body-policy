@@ -267,6 +267,12 @@ def main() -> None:
         generated_first_chunk: np.ndarray | None = None
         first_policy_observation_sha256: str | None = None
         active_replan_steps = int(initial_replan_steps)
+        # Arena does not expose ``base_height_cmd`` as its own observation
+        # group.  Track the command actually sent to the WBC instead.  The
+        # first plan has no previous command, so anchor it at the first
+        # decoded height target; later replans anchor at the last executed
+        # command and therefore remain continuous.
+        last_executed_base_height_command: float | None = None
 
         for step in tqdm.tqdm(range(step_budget)):
             requires_chunk = bool(policy.env_requires_new_action_chunk[0].item())
@@ -328,9 +334,11 @@ def main() -> None:
                     current_joint_position = _latest_first_env_observation(
                         obs["policy"]["robot_joint_pos"], 43
                     )
-                    current_base_height = _latest_first_env_observation(
-                        obs["action"]["base_height_cmd"], 1
-                    )[0]
+                    current_base_height = (
+                        float(raw_action_array[46])
+                        if last_executed_base_height_command is None
+                        else last_executed_base_height_command
+                    )
                     activation_diagnostic = m1_executor.activate(
                         _numpy(policy.current_action_chunk[0]),
                         measured_sim_joint_position=current_joint_position,
@@ -349,6 +357,7 @@ def main() -> None:
                     dtype=actions.dtype,
                     device=actions.device,
                 )
+                last_executed_base_height_command = float(executed_action[46])
             elif action_consumer is not None:
                 if requires_chunk:
                     action_consumer.add_chunk(
@@ -503,6 +512,14 @@ def main() -> None:
             arrays["right_wrist_pose_pelvis"],
             control_dt_s,
         )
+        activation_steps = np.flatnonzero(arrays["new_chunk"])
+        if len(activation_steps) >= 2:
+            realized_replan_frequency_hz = float(
+                (len(activation_steps) - 1)
+                / ((activation_steps[-1] - activation_steps[0]) * control_dt_s)
+            )
+        else:
+            realized_replan_frequency_hz = 0.0
         report = {
             "schema_version": 1,
             "protocol_id": str(args_cli.protocol_id),
@@ -525,9 +542,7 @@ def main() -> None:
             "replan_schedule": {
                 **scheduler.description(),
                 "realized_calls": int(arrays["new_chunk"].sum()),
-                "realized_frequency_hz": float(
-                    arrays["new_chunk"].sum() / (steps_executed * control_dt_s)
-                ),
+                "realized_frequency_hz": realized_replan_frequency_hz,
                 "realized_interval_steps_min": int(arrays["scheduled_replan_steps"].min()),
                 "realized_interval_steps_max": int(arrays["scheduled_replan_steps"].max()),
             },

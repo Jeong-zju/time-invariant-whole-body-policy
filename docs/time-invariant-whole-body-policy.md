@@ -145,7 +145,7 @@ MS-HAB 的数据、reference 和单轨迹失败诊断全部保留，但不再承
 \qquad \Delta t\in\{1,2,3,\ldots\}\text{ 个数据间隔}.
 \]
 
-对真实 `30 Hz` 数据，至少覆盖约 `33/67/100 ms`，对应部署中的 `30/15/10 Hz`。当前 Arena demonstrations 是理想化 `50 Hz`，而且缺少实测 root pose；第一版只能按 `20 ms` 的整数跨度、时间戳和导航命令重建相对 SE(2) target，再用 simulator telemetry 验证。插值得到的中间时刻只是建模假设，不能冒充真实观测；随机 jitter 的可信监督应由仿真 rollout 或未来带 odometry 的采集补齐。
+对真实 `30 Hz` 数据，至少覆盖约 `33/67/100 ms`，对应部署中的 `30/15/10 Hz`。当前 Arena demonstrations 是理想化 `50 Hz`；发布的预转换 LeRobot 缺少实测 root pose，但同一冻结 revision 的完整 HDF5 保留了逐帧 `robot_pos/robot_quat`。Phase 1 已按官方转换器从 HDF5 重建严格对齐的视频、关节和实测 root 轨迹，再以 `20 ms` 整数跨度构造相对 SE(2) target。插值得到的中间时刻仍只是建模假设，不能冒充真实观测；随机 jitter 的可信监督由闭环仿真 rollout 验证，未来真实数据仍必须保留 timestamp/odometry。
 
 无论数据源是哪一个，target 都必须随 `Δt` 改变：模型看到 `100 ms` 时预测 `100 ms` 后的状态，而不是对所有 `Δt` 复用同一行 action。若命令积分得到的 Arena 位姿与专家 replay 的实测 root 轨迹误差过大，M1 数据 Gate 直接失败，不能继续训练。
 
@@ -398,6 +398,20 @@ M1 使用和强基线相同的 tracker、限幅、训练预算与 seeds，并接
 3. 目标设备固定 `10/15/20/30 Hz` 和随机 `10–30 Hz` 下，底盘漂移、边界跳变、base–arm phase error 和安全指标不退化。
 
 如果 Phase 1 全部通过，结论必须收缩为：**学习全身位置参考已经够用，没有证据证明 Phase 2 的半群机制是必要的。** 此时停止增加模型复杂度。
+
+#### 6. 2026-08-16 远程全流程结果
+
+Phase 1 已在冻结远程环境中从数据重建跑到 80 条正式闭环，不再是待执行方案。完整 HDF5 经官方转换器重建后得到 100 条示教、85,889 帧和 84,289 个有效 anchor。命令积分代理在 100/100 条 episode 上都没有通过预注册误差门槛，因此正式 target 全部改用原始数据中的实测 root pose；门槛没有放宽。
+
+训练前的单 batch 和单 episode overfit 都通过。正式训练严格执行 47,468 个 optimizer step，loss 从 2.5935 降至 0.0278，最小值 0.0074；合并后的 checkpoint 约 7.1 GB。单 episode 解归一化检查的上身 RMSE 为 0.0672 rad，base height 为 0.00409 m，底盘 XY 为 0.0106 m、yaw 为 0.00756 rad。这些结果排除了明显的 shape、NaN 和单样本接线错误，但不能证明全量数据上的 target/归一化一定正确。
+
+正式闭环覆盖 10 个 seeds 和 8 种 schedule：`3.125/6.25/12.5/10/15/20/30 Hz` 加 `10–30 Hz` jitter，共 80/80 条 artifact 完整。所有条件都是 0/10 成功，全部 80 条均通过有限值、速度限幅和提前终止安全检查。因此 M1 **没有通过 Phase 1**：默认 3.125 Hz 相对 matched LoRA 的 10/10 下降了 100 个百分点，远超允许的 10 个百分点。
+
+跨频率轨迹也没有守住门槛。6.25 Hz 相对默认档的 root XY/yaw RMS 中位数为 0.330 m/0.897 rad；12.5 Hz 为 0.599 m/1.010 rad，均高于 0.10 m/0.15 rad。不过这部分只能作为描述性失败：虽然配对回合执行的首个模型 action chunk 相同，分叉前实测物理轨迹并不逐位一致，所以不能把差异干净地归因于重规划频率。
+
+目前最强的故障线索在 tracker 与仿真的时钟域。路线图只覆盖 0.32 s，而默认档跨 seeds 的 plan-age 中位数为 0.401 s，每条 1,200-step rollout 中位有 705.5 步已经越过 horizon、进入“保持末位姿且前馈清零”。这说明非实时仿真使用进程墙钟查询物理时间路线图会产生系统性错位；它是首要候选原因，不是已经证明的唯一原因，因为没有 horizon clamp 的高频条件同样 0/10，仍需排查全量 target/statistics 和 re-anchor 接线。
+
+冻结决策为 `stop_and_classify_phase_1_m1_failure_before_any_phase_2_work`：当前不得把失败写成“半群机制必需”，也不得直接启动 Phase 2。下一步只允许做有边界的 Phase 1 时钟域、归一化和 tracker ablation。逐字段执行记录、revision、checksum 和 artifact 位置见 [Phase 1 AI 实施规格](phase-1-ai-implementation.md#11-2026-08-16-远程执行记录)。
 
 ### Phase 2：让同一张短路线图不怕被切成不同时间步
 
@@ -812,7 +826,7 @@ method_id: m2_semigroup_whole_body_flow
 
 Arena 主线已经把旧 Gate N 与新 Gate N 分开：旧版示教速度诊断于 2026-08-15 归档在 [Gate N v0](arena-g1-gate-n.md)；新版 [Gate N frequency v1](arena-g1-gate-n-frequency.md) 已完成 120 条主对照闭环，另有 10 条同频审计，证明部署频率问题存在且三条简单基线没有完整解决。现阶段不再继续扩展旧 progress/clock 路线，下一项实际工作是 whole-body state target 与统一 tracker 的数据/执行闭环。
 
-截至 2026-08-16，Phase 1 的本地核心已不再只是文稿：机器契约、SE(2) 运算、多跨度 target、路线图 wall-clock 查询、底盘 tracker、proxy data gate CLI 和 14 个单元测试已经落地。下一项远端工作不是直接训练，而是按 [AI 实施规格](phase-1-ai-implementation.md) 回放 expert demonstrations、导出实测 root telemetry 并裁决命令积分代理能否使用；数据 Gate 未过前禁止启动 M1 正式训练。
+截至 2026-08-16，Phase 1 的机器契约、数据重建、SE(2) target、统一 tracker、训练、checkpoint 合并和 80 条正式闭环均已执行。M1 因默认能力从 matched LoRA 的 10/10 降至 0/10 而失败；跨频率配对又暴露出分叉前物理状态不一致，不能作干净因果解释。主线现在停在 Phase 1 故障分类，不进入顺序 5–10；允许的下一项工作仅是时钟域、target/statistics 与 tracker 接线的最小 ablation。
 
 ## 10. 与已有工作的关系，以及 novelty 在哪里
 
