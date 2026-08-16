@@ -1,0 +1,105 @@
+schema_version: 1
+protocol_id: arena-g1-gate-n-consumers-v1
+frozen_at: "2026-08-15"
+status: preregistered_before_consumer_closed_loop_results
+
+research_question: >-
+  Can either a policy explicitly conditioned on the real replanning delta-t or
+  a non-learned relative SE(2) waypoint tracker make GR00T robust to practical
+  3.125, 6.25, and 12.5 Hz replanning without sacrificing default-frequency
+  task success?
+
+parent_frequency_protocol: arena-g1-gate-n-frequency-v1
+raw_reference_artifact: artifacts/validation/arena-g1-gate-n/frequency-v1
+
+frozen_variables:
+  checkpoint_revision: 629479fedb1cf97c2f11ddc49eed951c5b750139
+  environment: galileo_g1_locomanip_pick_and_place
+  object: brown_box
+  embodiment: g1_wbc_joint
+  physics_hz: 200
+  control_hz: 50
+  action_slot_dt_s: 0.02
+  action_horizon: 16
+  max_environment_steps: 1200
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  replan_steps: [16, 8, 4]
+  replan_frequency_hz: [3.125, 6.25, 12.5]
+  budget_exhaustion_counts_as_failure: true
+
+closed_loop_diagnostic:
+  reference_replan_steps: 16
+  replan_steps: [16, 8, 4]
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+methods:
+  raw:
+    status: reuse_parent_frequency_protocol
+    base_action: newest_chunk_row_at_current_index
+  matched_unconditioned_lora:
+    training: 2_epoch_action_head_lora
+    purpose: control_for_the_effect_of_additional_finetuning
+  replan_dt_conditioned_policy:
+    training: 2_epoch_action_head_lora
+    input: real_replanning_interval_seconds
+    values_s: [0.32, 0.16, 0.08]
+    encoding: log2_delta_t_normalized_to_minus_one_zero_one
+    action_target: unchanged_demonstration_action_chunk
+    comparison: matched_unconditioned_lora
+  se2_waypoint:
+    training: none
+    changed_dimensions: [43, 44, 45]
+    upper_body_and_base_height: unchanged_newest_chunk_row
+    representation: >-
+      Integrate every predicted body-frame twist chunk from the measured root
+      pose into timestamped world-frame SE(2) references.
+    overlap_rule: timestamp_align_overlapping_world_frame_waypoints
+    tracker: feedforward_twist_plus_body_frame_proportional_pose_feedback
+    kp_xy_per_s: 1.0
+    kp_yaw_per_s: 1.0
+    max_abs_command: [0.5, 0.5, 0.5]
+
+validity:
+  same_initial_seed_and_physical_reset_required: true
+  same_first_chunk_required:
+    raw_and_matched_lora: true
+    se2_waypoint_within_method: true
+    replan_dt_conditioned_policy: false
+  delta_t_first_chunk_exception: >-
+    The delta-t condition is the intended treatment and is allowed to change
+    the first predicted chunk. Forcing the 0.32 s reference chunk into the
+    0.16/0.08 s conditions would erase the mechanism being tested during the
+    first replanning interval.
+  same_prebranch_physical_telemetry_required:
+    raw_matched_lora_and_se2: true
+    replan_dt_conditioned_policy: false
+  full_camera_hash_role: diagnostic_only
+  minimum_complete_seed_pairs_per_frequency: 10
+
+resistance_thresholds:
+  apply_to_both_nonreference_frequencies: true
+  maximum_median_root_xy_trajectory_rms_m: 0.10
+  maximum_median_root_yaw_trajectory_rms_rad: 0.15
+  maximum_absolute_success_rate_change: 0.20
+  maximum_default_frequency_success_drop_vs_raw: 0.10
+  baseline_resists_when: >-
+    Every run and validity check is complete; both 6.25 and 12.5 Hz remain
+    below all trajectory and success-change thresholds relative to that
+    method's 3.125 Hz result; and its 3.125 Hz success rate drops by no more
+    than 10 percentage points relative to the raw reference.
+
+gate_n_decision:
+  stage_a_problem_existence: >-
+    The official raw policy has at least one valid nonreference frequency that
+    crosses a frozen trajectory or success-change threshold.
+  stage_b_simple_interface_sufficient_when: >-
+    Matched ordinary fine-tuning, delta-t conditioning, or SE(2) waypoint
+    tracking resists frequency change while preserving default-frequency success.
+  mobile_vla_policy_research_warranted_when: >-
+    Stage A passes, both requested clock-aware alternatives fail, and the
+    matched unconditioned LoRA does not already remove the problem.
+  interpretation_limits:
+    - A failure is task- and checkpoint-specific evidence, not proof for all mobile robots.
+    - A pass by either baseline stops the new-policy claim even if the other baseline fails.
+    - Waypoint conversion and timestamped temporal ensembling are baselines, not model novelty.
+    - The raw frequency screen establishes practical sensitivity; this stage tests whether an execution interface already removes it.

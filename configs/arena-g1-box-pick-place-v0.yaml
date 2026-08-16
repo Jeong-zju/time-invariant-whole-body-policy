@@ -82,6 +82,15 @@ bm0:
     success_rate: 1.0
     num_episodes: 1
     status: closed_loop_gate_passed
+  gate0_50_rollout:
+    completed_at: "2026-08-15"
+    seeds: "0:50"
+    successes: 44
+    failures: 6
+    success_rate: 0.88
+    wilson_95: [0.7619518261679701, 0.9438239984906773]
+    budget_exhausted_failure_seeds: [2, 22, 31, 32, 37, 41]
+    status: passed
   lora_100_step_smoke:
     rank: 32
     batch_size: 4
@@ -110,6 +119,9 @@ bm0:
 
 evaluation:
   max_steps: 1200
+  one_rollout_per_seed: true
+  stop_on_first_termination: true
+  budget_exhaustion_counts_as_failure: true
   policy_type: gr00t_closedloop
   require_nonzero_success: true
   current_episode_count_is_pipeline_gate_only: true

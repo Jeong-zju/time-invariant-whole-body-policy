@@ -1,0 +1,156 @@
+schema_version: 1
+protocol_id: arena-g1-gate-n-frequency-v1
+frozen_at: "2026-08-15"
+status: preregistered_before_closed_loop_results
+protocol_amendments:
+  - amended_at: "2026-08-15"
+    timing: before_any_non_reference_rollout_completed
+    reason: >-
+      A repeated reference-condition diagnostic showed that environment reset
+      and model loading had advanced the global RNG before the first policy
+      call. The invalid partial runs were archived, the first policy RNG draw
+      was explicitly reseeded, and an initial-observation hash was added before
+      restarting the formal suite. Thresholds and tested conditions were not
+      changed.
+  - amended_at: "2026-08-15"
+    timing: after_one_invalid_non_reference_diagnostic_before_any_valid_pair
+    reason: >-
+      The then-recorded state-only observation hash matched, but fresh CUDA
+      processes still produced numerically close rather than bit-identical first chunks. The
+      invalid partial suite was archived. Each non-reference rollout now
+      executes the reference condition's saved first complete chunk, while its
+      independently generated chunk hash is retained as diagnostic telemetry.
+      Trajectories therefore branch only when their replanning schedules first
+      differ. Thresholds, conditions, and seeds were not changed.
+  - amended_at: "2026-08-15"
+    timing: after_renderer_hash_diagnostic_before_any_valid_pair
+    reason: >-
+      Exact hashes of the full camera-containing GR00T input differed across
+      fresh Isaac Sim processes even though the forced action prefix and every
+      logged physical state were bit-identical before replanning. Full input
+      hashes remain diagnostic. Formal validity now requires the executed first
+      chunk and all logged root, joint, wrist, and command telemetry to be
+      bit-identical through the candidate's first replanning boundary. The
+      partial diagnostic suite was archived and restarted. Effect thresholds,
+      conditions, and seeds were not changed.
+
+research_question: >-
+  Does the same frozen mixed velocity-position whole-body policy produce
+  materially different base trajectories or task outcomes when only the
+  closed-loop replanning frequency changes?
+
+scope:
+  replaces_primary_question_from: arena-g1-gate-n-v0
+  legacy_question_status: archived_negative_result
+  does_not_claim:
+    - demonstration_speed_is_label_ambiguity
+    - replanning_frequency_equals_control_frequency
+    - any_observed_frequency_effect_is_already_caused_by_velocity_integration
+
+benchmark:
+  parent_protocol: arena-g1-box-pick-place-v0
+  environment: galileo_g1_locomanip_pick_and_place
+  object: brown_box
+  embodiment: g1_wbc_joint
+  checkpoint_architecture: GR00T_N1_5
+  checkpoint_revision: 629479fedb1cf97c2f11ddc49eed951c5b750139
+  physics_hz: 200
+  control_hz: 50
+  action_horizon: 16
+  action_slot_dt_s: 0.02
+  max_environment_steps: 1200
+  budget_exhaustion_counts_as_failure: true
+  metric_recorder_hdf5: unique_per_rollout_to_allow_safe_parallel_execution
+
+action_contract:
+  model_output_dimensions: 32
+  simulator_action_dimensions: 50
+  mixed_semantics:
+    upper_body: absolute_joint_position
+    base: body_frame_velocity_vx_vy_yaw_rate
+    base_height: absolute_position
+  chunk_consumer: one_action_row_per_50hz_environment_step
+  default_replan_after_steps: 16
+  default_replan_frequency_hz: 3.125
+  important_distinction: >-
+    This gate changes when a new model chunk is requested. It does not change
+    the 50 Hz action consumer or the 200 Hz physics clock.
+
+closed_loop_diagnostic:
+  reference_replan_steps: 16
+  replan_steps: [16, 8, 4]
+  nominal_replan_frequency_hz: [3.125, 6.25, 12.5]
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  same_first_chunk_required_per_seed: true
+  same_first_policy_observation_required_per_seed: false
+  first_policy_observation_hash_role: diagnostic_for_renderer_nondeterminism
+  same_prebranch_physical_telemetry_required_per_seed: true
+  first_policy_inference_rng_seed: paired_environment_seed
+  first_chunk_control: >-
+    Generate and save the 16-step reference chunk first; force the paired 8-step
+    and 4-step rollouts to execute that exact chunk until their first scheduled
+    replan. Preserve the independently generated chunk hash for diagnostics.
+  telemetry:
+    - root_position_and_quaternion
+    - root_linear_and_angular_velocity
+    - commanded_base_velocity
+    - full_joint_position
+    - dual_wrist_pose_in_pelvis
+    - chunk_index_and_inference_boundary
+    - inference_wall_time
+    - success_and_budget_exhaustion
+
+paired_metrics:
+  reference: replan_steps_16
+  align_by: simulated_control_step
+  compare_until: shorter_rollout_length
+  metrics:
+    - root_xy_trajectory_rms_m
+    - root_yaw_trajectory_rms_rad
+    - common_time_endpoint_xy_error_m
+    - common_time_endpoint_yaw_error_rad
+    - base_arm_progress_phase_mae
+    - commanded_vs_measured_endpoint_error_m
+    - task_success_difference
+
+gate_thresholds:
+  minimum_complete_seed_pairs_per_condition: 10
+  minimum_median_root_xy_trajectory_rms_m: 0.10
+  minimum_median_root_yaw_trajectory_rms_rad: 0.15
+  minimum_absolute_success_rate_change: 0.20
+  require_first_chunk_identity: true
+  problem_exists_when: >-
+    All paired runs are complete, the executed first chunk and all logged
+    physical telemetry through the candidate's first replanning boundary are
+    identical for each seed across conditions, and at least one non-reference
+    replanning frequency crosses any one of the preregistered trajectory, yaw,
+    or success thresholds.
+  failure_action: stop_frequency_method_work
+  incomplete_action: resume_missing_runs_without_changing_thresholds
+  invalid_action: rerun_invalid_pairs_without_interpreting_effects
+  pass_action: proceed_to_clock_aware_consumer_and_se2_waypoint_baselines
+
+interpretation_limits:
+  - A pass establishes closed-loop replanning-rate sensitivity, not its cause.
+  - A pass does not by itself prove that implicit delta-t or velocity integration is responsible.
+  - The next gate must compare raw index consumption, timestamp-aware velocity consumption, and relative SE2 waypoint tracking without retraining the VLA.
+  - If a non-learned clock-aware consumer removes the effect, do not claim a new VLA architecture is necessary.
+
+repeatability_audit:
+  status: frozen_after_primary_gate_before_formal_repeat_rollouts
+  purpose: >-
+    Check whether independent 3.125 Hz reruns with the same executed first
+    chunk already show effects as large as the cross-frequency comparison.
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  reference_replan_steps: 16
+  duplicate_replan_steps: 16
+  require_first_chunk_identity: true
+  require_prebranch_physical_telemetry_identity: true
+  maximum_tolerable_same_frequency_noise:
+    median_root_xy_trajectory_rms_m: 0.10
+    median_root_yaw_trajectory_rms_rad: 0.15
+    absolute_success_rate_change: 0.20
+  interpretation: >-
+    This is a post-primary-gate robustness audit. If same-frequency noise
+    reaches any original material-effect threshold, the primary pass must not
+    be described as a frequency-only causal result.

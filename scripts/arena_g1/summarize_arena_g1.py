@@ -27,7 +27,17 @@ def main() -> None:
     matches = re.findall(r"Metrics:\s*(\{[^\n]+\})", args.log.read_text(encoding="utf-8"))
     if not matches:
         raise RuntimeError(f"No Metrics record found in {args.log}")
-    metrics = ast.literal_eval(matches[-1])
+    evaluator_metrics = ast.literal_eval(matches[-1])
+    rollout_matches = re.findall(r"Rollout:\s*(\{[^\n]+\})", args.log.read_text(encoding="utf-8"))
+    rollout = ast.literal_eval(rollout_matches[-1]) if rollout_matches else {}
+    recorded_episodes = int(evaluator_metrics.get("num_episodes", 0))
+    if recorded_episodes > 1:
+        raise RuntimeError(f"Expected at most one recorded episode, got {recorded_episodes}")
+    metrics = dict(evaluator_metrics)
+    metrics["num_episodes"] = 1
+    if recorded_episodes == 0:
+        metrics["success_rate"] = 0.0
+    budget_exhausted = bool(rollout.get("budget_exhausted", recorded_episodes == 0))
     result = {
         "schema_version": 1,
         "protocol_id": "arena-g1-box-pick-place-v0",
@@ -38,7 +48,10 @@ def main() -> None:
         "checkpoint": args.checkpoint,
         "seed": args.seed,
         "num_steps": 1200,
+        "steps_executed": int(rollout.get("steps_executed", 1200)),
+        "budget_exhausted": budget_exhausted,
         "metrics": metrics,
+        "evaluator_metrics": evaluator_metrics,
         "source_log": str(args.log),
         "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
     }

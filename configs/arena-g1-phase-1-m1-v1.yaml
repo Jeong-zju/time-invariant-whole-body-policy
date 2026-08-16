@@ -1,0 +1,162 @@
+schema_version: 1
+protocol_id: arena-g1-phase-1-m1-v1
+frozen_at: "2026-08-16"
+status: implementation_ready_data_gate_required
+
+parent_protocols:
+  benchmark: arena-g1-box-pick-place-v0
+  frequency_gate: arena-g1-gate-n-frequency-v1
+  simple_consumer_gate: arena-g1-gate-n-consumers-v1
+
+research_stage: phase_1
+method_id: m1_multi_horizon_whole_body_position
+single_change: >-
+  Replace the mixed upper-body-position plus base-twist target with a
+  timestamped upper-body-position plus relative-base-SE2 target. Do not add a
+  semigroup loss, state-flow architecture, random-replanning training, or a new
+  vision-language backbone in this phase.
+
+upstream_lock:
+  arena_commit: f479817431f6a02a6e40e4ea76d89203b59146d4
+  isaaclab_commit: 3c6e67bb5c7ada942a6d1884ab69338f57596f77
+  groot_commit: 3bce5530b3af0ce3619d5fda041385f9b732dca8
+  dataset_revision: 97f7b5a4135e4e6a206d394c9b6ec0253f1558a7
+  checkpoint_revision: 629479fedb1cf97c2f11ddc49eed951c5b750139
+
+model_contract:
+  backbone: frozen_official_groot_n1_5_visual_language_backbone
+  output_shape: [16, 32]
+  output_layout:
+    upper_body_joint_and_hand_position: [0, 28]
+    base_height_position: [28, 29]
+    base_relative_se2: [29, 32]
+  query_times_s:
+    - 0.02
+    - 0.04
+    - 0.06
+    - 0.08
+    - 0.10
+    - 0.12
+    - 0.14
+    - 0.16
+    - 0.18
+    - 0.20
+    - 0.22
+    - 0.24
+    - 0.26
+    - 0.28
+    - 0.30
+    - 0.32
+  query_time_unit: seconds
+  base_frame: anchor_measured_base_body_frame
+  upper_body_semantics: absolute_joint_position_at_query_time
+  base_height_semantics: absolute_position_at_query_time
+  lower_body_claim: >-
+    GR00T does not predict all 43 G1 joints. Homie v2/WBC still generates the
+    lower-body joint targets from the tracked base reference.
+
+data_contract:
+  timestamps:
+    source: per_episode_timestamp_column
+    require_strictly_increasing: true
+    nominal_arena_hz: 50
+    nominal_target_robot_hz: 30
+    frame_index_is_not_time: true
+  preferred_target_source: measured_odometry
+  allowed_fallback_source: command_integration_proxy
+  provenance_is_required_per_artifact: true
+  interpolation:
+    upper_body_and_height: linear
+    base_pose: se2_log_exp_geodesic
+  terminal_policy: drop_anchor_if_full_horizon_is_unavailable
+  future_observation_as_input: forbidden
+  arena_limitation: >-
+    The frozen LeRobot dataset lacks measured root SE(2). Proxy targets may be
+    used only after they are compared against expert-replay root telemetry.
+
+proxy_data_gate:
+  horizon_s: 0.32
+  maximum_xy_p95_m: 0.05
+  maximum_yaw_p95_rad: 0.08
+  action_when_passed: allow_proxy_labeled_m1_smoke_and_keep_provenance_label
+  action_when_failed: capture_measured_root_odometry_and_rebuild_targets
+  interpretation: >-
+    These are preregistered engineering tolerances, not constants taken from a
+    paper. Passing makes the proxy usable for a smoke experiment; it does not
+    turn command integration into measured odometry.
+
+tracker:
+  query_clock: monotonic_wall_clock_since_plan_activation
+  reanchor: measured_current_state_on_every_new_policy_result
+  interpolation:
+    base_pose: se2_log_exp_geodesic
+    upper_body_and_height: linear
+  base_command: derivative_feedforward_plus_body_frame_pose_feedback
+  kp_xy_per_s: 1.0
+  kp_yaw_per_s: 1.0
+  max_abs_base_twist: [0.5, 0.5, 0.5]
+  after_horizon: hold_last_position_and_zero_feedforward
+  arena_arm_velocity_feedforward: unavailable_log_only
+  shared_across_methods: true
+
+training_budget:
+  initialization: official_task_tuned_groot_n1_5
+  train_episodes: 100
+  epochs: 2
+  optimizer_steps: 47468
+  batch_size: 4
+  learning_rate: 1.0e-4
+  lora_rank: 32
+  lora_alpha: 32
+  lora_dropout: 0.1
+  tune_llm: false
+  tune_visual: false
+  tune_projector: true
+  tune_action_head: true
+  recompute_statistics_for_new_action_representation: true
+
+phase_1_forbidden_changes:
+  - semigroup_or_partition_loss
+  - neural_ode_or_state_flow_head
+  - random_replanning_schedule_training
+  - closed_partition_loss
+  - adaptive_or_event_triggered_replanning
+  - vision_language_backbone_upgrade
+  - tracker_gain_tuning_per_method
+
+evaluation:
+  smoke_seeds: [0]
+  development_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  arena_replan_steps: [16, 8, 4]
+  arena_replan_frequency_hz: [3.125, 6.25, 12.5]
+  target_fixed_frequency_hz: [10, 15, 20, 30]
+  target_random_frequency_hz: [10, 30]
+  max_environment_steps: 1200
+  paired_initial_states: true
+  metrics:
+    - task_success
+    - root_xy_trajectory_rms
+    - root_yaw_trajectory_rms
+    - base_arm_progress_phase_error
+    - replan_position_jump
+    - replan_velocity_jump
+    - cumulative_base_drift
+    - inference_wall_time
+    - plan_age_at_command
+
+pass_conditions:
+  maximum_default_success_drop_vs_matched_lora: 0.10
+  both_nondefault_arena_frequencies_must_pass: true
+  maximum_median_root_xy_trajectory_rms_m: 0.10
+  maximum_median_root_yaw_trajectory_rms_rad: 0.15
+  maximum_absolute_success_rate_change: 0.20
+  require_no_material_safety_regression: true
+  decision_when_passed: stop_and_report_action_representation_as_sufficient
+  decision_when_failed: proceed_to_phase_2_only_after_failure_analysis
+
+artifacts:
+  target_root: artifacts/phase_1_m1/targets
+  data_gate_report: artifacts/phase_1_m1/data-gate/report.json
+  checkpoint_root: checkpoints/arena_g1/phase_1_m1
+  rollout_root: artifacts/validation/arena-g1-phase-1-m1
+  final_report: artifacts/validation/arena-g1-phase-1-m1/gate-evaluation.json

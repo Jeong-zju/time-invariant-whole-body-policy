@@ -1,0 +1,41 @@
+schema_version: 1
+protocol_id: arena-g1-phase-1-m1-v1
+frozen_at: "2026-08-16"
+
+frozen_variables:
+  model: gr00t_n1.5_phase_1_m1
+  training_seed: 42
+  optimizer_steps: 47468
+  batch_size: 4
+  learning_rate: 0.0001
+  lora_rank: 32
+  lora_alpha: 32
+  lora_dropout: 0.1
+  physics_hz: 200
+  control_hz: 50
+  action_slot_dt_s: 0.02
+  action_horizon: 16
+  max_environment_steps: 1200
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  primary_replan_steps: [16, 8, 4]
+  primary_replan_frequency_hz: [3.125, 6.25, 12.5]
+  deployment_fixed_frequency_hz: [10, 15, 20, 30]
+  deployment_jitter_frequency_hz: [10, 30]
+
+closed_loop_diagnostic:
+  reference_replan_steps: 16
+  replan_steps: [16, 8, 4]
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+resistance_thresholds:
+  maximum_median_root_xy_trajectory_rms_m: 0.10
+  maximum_median_root_yaw_trajectory_rms_rad: 0.15
+  maximum_absolute_success_rate_change: 0.20
+  maximum_default_frequency_success_drop_vs_matched_lora: 0.10
+
+validity:
+  minimum_complete_seed_pairs_per_frequency: 10
+  same_first_chunk_required: true
+  same_prebranch_physical_telemetry_required: true
+  measured_odometry_target_required: true
+  budget_exhaustion_counts_as_failure: true
