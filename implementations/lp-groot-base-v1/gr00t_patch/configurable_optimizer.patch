@@ -1,0 +1,25 @@
+diff --git a/gr00t/configs/finetune_config.py b/gr00t/configs/finetune_config.py
+--- a/gr00t/configs/finetune_config.py
++++ b/gr00t/configs/finetune_config.py
+@@ -99,6 +99,9 @@ class FinetuneConfig:
+ 
+     learning_rate: float = 1e-4
+     """Initial learning rate for optimizer."""
++
++    optim: str = "adamw_torch"
++    """Transformers optimizer name, for example adamw_torch or adafactor."""
+ 
+     gradient_accumulation_steps: int = 1
+     """Number of forward passes to accumulate before performing a backward/update step."""
+diff --git a/gr00t/experiment/launch_finetune.py b/gr00t/experiment/launch_finetune.py
+--- a/gr00t/experiment/launch_finetune.py
++++ b/gr00t/experiment/launch_finetune.py
+@@ -122,7 +122,7 @@ if __name__ == "__main__":
+ 
+     config.training.experiment_name = ft_config.experiment_name
+     config.training.start_from_checkpoint = ft_config.base_model_path
+-    config.training.optim = "adamw_torch"
++    config.training.optim = ft_config.optim
+     config.training.global_batch_size = ft_config.global_batch_size
+     config.training.dataloader_num_workers = ft_config.dataloader_num_workers
+     config.training.learning_rate = ft_config.learning_rate
