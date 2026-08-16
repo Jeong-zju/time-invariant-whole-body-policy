@@ -129,9 +129,10 @@ class FrequencyAggregateTest(unittest.TestCase):
                     "reference_replan_steps": 16,
                 },
             }
-            report = aggregate(root, config)
+            report = aggregate(root, config, "/stable/artifact/root")
             comparison = report["paired_against_reference"]["8"]
             self.assertEqual(report["completed_runs"], 2)
+            self.assertEqual(report["input_root"], "/stable/artifact/root")
             self.assertTrue(comparison["all_first_action_chunks_identical"])
             self.assertTrue(comparison["all_first_policy_observations_identical"])
             self.assertTrue(comparison["all_prebranch_physical_telemetry_identical"])

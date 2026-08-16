@@ -139,7 +139,11 @@ def compare_pair(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[s
     }
 
 
-def aggregate(input_root: Path, config: dict[str, Any]) -> dict[str, Any]:
+def aggregate(
+    input_root: Path,
+    config: dict[str, Any],
+    input_root_label: str | None = None,
+) -> dict[str, Any]:
     runs = load_runs(input_root)
     diagnostic = config["closed_loop_diagnostic"]
     expected_steps = [int(value) for value in diagnostic["replan_steps"]]
@@ -240,7 +244,10 @@ def aggregate(input_root: Path, config: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "protocol_id": config["protocol_id"],
-        "input_root": str(input_root),
+        # Some callers construct a temporary symlink view of the immutable
+        # rollout directories.  Record the stable artifact root when supplied
+        # so rerunning a pure aggregation produces byte-identical provenance.
+        "input_root": input_root_label or str(input_root),
         "expected_runs": len(expected_steps) * len(expected_seeds),
         "completed_runs": len(runs),
         "missing_runs": missing,
@@ -265,11 +272,12 @@ def aggregate(input_root: Path, config: dict[str, Any]) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-root", type=Path, required=True)
+    parser.add_argument("--input-root-label")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
-    report = aggregate(args.input_root, config)
+    report = aggregate(args.input_root, config, args.input_root_label)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))

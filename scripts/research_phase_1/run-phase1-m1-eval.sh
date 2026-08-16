@@ -94,6 +94,7 @@ if [[ "${skip_finalize}" != "1" && ( "${suite}" == "standard" || "${suite}" == "
     cd "${project_root}"
     "${python_bin}" "${script_root}/summarize_frequency_gate.py" \
         --input-root "${temporary_root}" \
+        --input-root-label "${output_root}" \
         --config "${protocol_config}" \
         --output "${output_root}/report.json"
 fi

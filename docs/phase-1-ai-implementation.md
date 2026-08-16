@@ -380,4 +380,4 @@ artifacts/validation/arena-g1-phase-1-m1/gate-evaluation.json
 artifacts/validation/arena-g1-phase-1-m1/{fixed-*,jitter-10-30hz}/seed-*/rollout.{json,npz,log}
 ```
 
-最终 report SHA-256 为 `81c4de7f3ece82eef403e47a51de4cdfd8b48289625a60c6d29ae683809095be`；gate-evaluation SHA-256 为 `c6ba32581d2a7b83472356b6d633d3035cedc2eb559780ac4140b93429c42db3`。两者对应本节数值；重新生成 gate artifact 后必须同步更新 checksum。
+最终 report SHA-256 为 `e1a9d4123fd6f0da08c79753525957aacb9b694c6ed49f43e331bb23bde7e9c9`；gate-evaluation SHA-256 为 `c6ba32581d2a7b83472356b6d633d3035cedc2eb559780ac4140b93429c42db3`。汇总器将临时 symlink view 归一化为稳定 artifact root，连续生成两次的 report checksum 一致。两份文件对应本节数值；重新生成 gate artifact 后必须同步更新 checksum。
