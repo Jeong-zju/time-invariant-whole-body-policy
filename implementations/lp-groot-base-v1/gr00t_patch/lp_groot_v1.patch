@@ -1,0 +1,44 @@
+diff --git a/gr00t/data/dataset/factory.py b/gr00t/data/dataset/factory.py
+index 8f65265..bb0476d 100644
+--- a/gr00t/data/dataset/factory.py
++++ b/gr00t/data/dataset/factory.py
+@@ -5,5 +5,6 @@ from tqdm import tqdm
+ 
+ from gr00t.configs.base_config import Config
++from gr00t.data.dataset.lp_base_dataset import LPBaseSingleStepDataset
+ from gr00t.data.dataset.sharded_mixture_dataset import ShardedMixtureDataset
+ from gr00t.data.dataset.sharded_single_step_dataset import ShardedSingleStepDataset
+ from gr00t.data.embodiment_tags import EmbodimentTag
+@@ -45,8 +46,14 @@ class DatasetFactory:
+                 else:
+                     generate_stats(dataset_path)
+                     generate_rel_stats(dataset_path, EmbodimentTag(embodiment_tag))
+                 barrier()
+-                dataset = ShardedSingleStepDataset(
++                action_keys = self.config.data.modality_configs[embodiment_tag][
++                    "action"
++                ].modality_keys
++                dataset_class = (
++                    LPBaseSingleStepDataset if "lp_base_path" in action_keys else ShardedSingleStepDataset
++                )
++                dataset = dataset_class(
+                     dataset_path=dataset_path,
+                     embodiment_tag=EmbodimentTag(embodiment_tag),
+                     modality_configs=self.config.data.modality_configs[embodiment_tag],
+diff --git a/gr00t/model/gr00t_n1d6/processing_gr00t_n1d6.py b/gr00t/model/gr00t_n1d6/processing_gr00t_n1d6.py
+index 48a16b5..3d38fcc 100644
+--- a/gr00t/model/gr00t_n1d6/processing_gr00t_n1d6.py
++++ b/gr00t/model/gr00t_n1d6/processing_gr00t_n1d6.py
+@@ -338,6 +338,12 @@ class Gr00tN1d6Processor(BaseProcessor):
+             action_mask = torch.ones_like(normalized_actions)
+             action_mask[action_horizon:] = 0
+             action_mask[:, action_dim:] = 0
++            valid_mask = content.metadata.get("action_valid_mask")
++            if valid_mask is not None:
++                valid_mask = torch.as_tensor(valid_mask, dtype=action_mask.dtype).reshape(-1, 1)
++                if valid_mask.shape[0] != action_horizon:
++                    raise ValueError("LP action validity mask does not match action horizon")
++                action_mask[:action_horizon, :action_dim] *= valid_mask
+         else:
+             assert not self.training, "Action is required in training mode"
+             normalized_actions = None

@@ -49,3 +49,13 @@ tests/         单元测试与不变性回归测试
 ## 当前状态
 
 Phase -1 的数据、checkpoint 和 GPU 环境检查已完成；闭环 rollout 仍依赖 gated 模型授权与仿真许可确认。尚未进入正式模型实现阶段。
+
+## 已迁入的可执行基线
+
+`develop/rp` 分支加入了第一份经过训练与闭环验证的实现：
+[`implementations/lp-groot-base-v1`](implementations/lp-groot-base-v1/README.md)。
+它使用预训练 GR00T N1.6，只把移动底盘表示为 32 个局部 SE(2)
+path-time anchors，并通过标定后的执行适配器恢复 20 Hz 地盘命令。
+
+该实现是 **base-only representation baseline**，不是完整 whole-body 方法，也没有
+online adaptive phase controller。目录内 README 记录了算法定义、训练配置、验证结果、
