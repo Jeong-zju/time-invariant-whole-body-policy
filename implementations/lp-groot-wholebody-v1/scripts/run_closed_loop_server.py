@@ -16,12 +16,24 @@ from gr00t.policy.server_client import PolicyServer
 from lpwb.execution import ExecutionCalibration, decode_path_time_commands
 
 
-VIDEO_MAP = {
-    "robot0_eye_in_hand": "video.res256_image_wrist_0",
-    "robot0_agentview_left": "video.res256_image_side_0",
-    "robot0_agentview_right": "video.res256_image_side_1",
+VIDEO_SOURCES = {
+    "robot0_eye_in_hand": (
+        "video.robot0_eye_in_hand",
+        "video.res256_image_wrist_0",
+    ),
+    "robot0_agentview_left": (
+        "video.robot0_agentview_left",
+        "video.res256_image_side_0",
+    ),
+    "robot0_agentview_right": (
+        "video.robot0_agentview_right",
+        "video.res256_image_side_1",
+    ),
 }
-LANGUAGE_SOURCE = "annotation.human.action.task_description"
+LANGUAGE_SOURCES = (
+    "annotation.human.task_description",
+    "annotation.human.action.task_description",
+)
 LANGUAGE_TARGET = "annotation.human.task_description"
 
 
@@ -37,6 +49,16 @@ def _language_item(value: Any) -> str:
     while isinstance(value, (list, tuple, np.ndarray)) and len(value) == 1:
         value = value[0]
     return str(value)
+
+
+def _first_present(observation: dict[str, Any], candidates: tuple[str, ...]) -> Any:
+    for key in candidates:
+        if key in observation:
+            return observation[key]
+    raise KeyError(
+        "none of the required observation keys are present: "
+        + ", ".join(candidates)
+    )
 
 
 class RoboCasaLpwbPolicy(BasePolicy):
@@ -67,13 +89,13 @@ class RoboCasaLpwbPolicy(BasePolicy):
 
     def _nested_observation(self, observation: dict[str, Any]) -> dict[str, Any]:
         state_keys = self.policy.modality_configs["state"].modality_keys
-        language = observation[LANGUAGE_SOURCE]
+        language = _first_present(observation, LANGUAGE_SOURCES)
         if isinstance(language, np.ndarray):
             language = list(language)
         return {
             "video": {
-                target: np.asarray(observation[source])
-                for target, source in VIDEO_MAP.items()
+                target: np.asarray(_first_present(observation, sources))
+                for target, sources in VIDEO_SOURCES.items()
             },
             "state": {
                 key: np.asarray(observation[f"state.{key}"], dtype=np.float32)
@@ -135,6 +157,11 @@ def main() -> None:
     if args.method in ("b1", "b2") and not args.calibration:
         parser.error(f"--calibration is required for {args.method}")
 
+    # The modality registration is shared, but recording the method in the
+    # process environment keeps the server launch provenance unambiguous.
+    import os
+
+    os.environ["LPWB_METHOD"] = args.method
     load_module(args.modality_config_path)
     model = Gr00tPolicy(
         embodiment_tag=EmbodimentTag.NEW_EMBODIMENT,

@@ -616,3 +616,29 @@ three-task result.
 The next concrete experiment is to finish the matched 20k training, run
 held-out open-loop diagnostics at the archived checkpoints, then run the fixed
 seed closed-loop protocol with identical observation and execution budgets.
+
+### 14.5 Exact RoboCasa365 evaluation environment decision
+
+The unresolved `DeliverStraw` mapping has been traced to a simulator-version
+mismatch rather than to a renamed old gym ID. The GR00T-pinned RoboCasa fork is
+commit `d89d481ce9c76da7f179466981676e268aa842e5`; neither its source registry nor
+its installed gym wrappers contain `DeliverStraw`. The official RoboCasa365
+v1.0.1 repository at commit `921c9a5736a8d0ea5589657898aadcfa55a6a195`
+contains the exact composite `DeliverStraw` class, its success predicate, and
+the target-split dataset registry entry. It also exposes the same Panda-Omron
+12D command groups and measured state groups through the new
+`robocasa/<Task>` gym wrapper.
+
+Decision: keep the pinned GR00T/RoboCasa training environment unchanged and
+create a separate pinned RoboCasa365 evaluation environment using robosuite
+commit `5ce6643f3092639d08f7b0f90ed1c6a84f50552c`. Before closed-loop inference,
+construct and schema-audit the exact target-split environments
+`robocasa/NavigateKitchen`, `robocasa/PickPlaceCounterToStove`, and
+`robocasa/DeliverStraw`. Use the official v1.0.1 horizons 450, 600, and 2550,
+respectively. Do not use the earlier 720-step global cap for the composite
+task, and do not substitute a proxy.
+
+The fixed comparison remains 30 seeds per task and method, seeds 20260818 to
+20260847, 8 executed primitive actions per policy call, for 270 total rollouts.
+The environment installation, exact commit IDs, schema report, open-loop
+reports, closed-loop JSON, and videos must all be archived back to `zeno-rp`.

@@ -12,12 +12,21 @@ import time
 import gymnasium as gym
 import numpy as np
 
-# PnPCounterToStove is not imported by this RoboCasa commit's public init.
-from robocasa.environments.kitchen.single_stage.kitchen_pnp import (  # noqa: F401
-    PnPCounterToStove,
-)
+# The pinned GR00T RoboCasa fork needs an explicit import for this atomic task.
+# RoboCasa365 v1.0.1 moved the task and registers all gym IDs from robocasa.__init__.
+try:  # pragma: no cover - only exercised by the legacy simulator environment
+    from robocasa.environments.kitchen.single_stage.kitchen_pnp import (  # noqa: F401
+        PnPCounterToStove,
+    )
+except ImportError:
+    pass
+
 import robocasa  # noqa: F401,E402
-from robocasa.utils.gym_utils import GrootRoboCasaEnv  # noqa: F401,E402
+
+try:  # pragma: no cover - registration side effect for the legacy fork
+    import robocasa.utils.gym_utils.gymnasium_groot  # noqa: F401,E402
+except ImportError:
+    pass
 
 from gr00t.eval.sim.wrapper.multistep_wrapper import MultiStepWrapper
 from gr00t.eval.sim.wrapper.video_recording_wrapper import (
@@ -27,11 +36,14 @@ from gr00t.eval.sim.wrapper.video_recording_wrapper import (
 from gr00t.policy.server_client import PolicyClient
 
 
-def parse_task(value: str) -> tuple[str, str, int, int]:
+def parse_task(value: str) -> tuple[str, str, int, int, int | None]:
     parts = value.split("::")
-    if len(parts) != 4:
-        raise argparse.ArgumentTypeError("task must be NAME::GYM_ID::SEED_START::COUNT")
-    return parts[0], parts[1], int(parts[2]), int(parts[3])
+    if len(parts) not in (4, 5):
+        raise argparse.ArgumentTypeError(
+            "task must be NAME::GYM_ID::SEED_START::COUNT[::MAX_EPISODE_STEPS]"
+        )
+    horizon = int(parts[4]) if len(parts) == 5 else None
+    return parts[0], parts[1], int(parts[2]), int(parts[3]), horizon
 
 
 def make_env(
@@ -40,8 +52,14 @@ def make_env(
     max_episode_steps: int,
     n_action_steps: int,
     steps_per_render: int,
+    split: str | None,
 ):
-    raw = gym.make(gym_id, enable_render=True)
+    env_kwargs = {"enable_render": True}
+    # RoboCasa365 v1.0.1 exposes exact target-scene splits through the new
+    # robocasa/<Task> gym IDs. The legacy Panda-Omron IDs do not accept split.
+    if gym_id.startswith("robocasa/") and split is not None:
+        env_kwargs["split"] = split
+    raw = gym.make(gym_id, **env_kwargs)
     recorded = VideoRecordingWrapper(
         raw,
         VideoRecorder.create_h264(
@@ -107,6 +125,7 @@ def run_batch(
     max_episode_steps: int,
     n_action_steps: int,
     steps_per_render: int,
+    split: str | None,
 ) -> list[dict]:
     environments, observations, states = [], [], []
     for seed in seeds:
@@ -117,6 +136,7 @@ def run_batch(
             max_episode_steps,
             n_action_steps,
             steps_per_render,
+            split,
         )
         observation, _ = env.reset(seed=seed)
         environments.append(env)
@@ -189,21 +209,34 @@ def main() -> None:
     parser.add_argument("--max-episode-steps", type=int, default=720)
     parser.add_argument("--n-action-steps", type=int, default=8)
     parser.add_argument("--steps-per-render", type=int, default=4)
+    parser.add_argument(
+        "--split",
+        choices=["target", "pretrain", "all", "none"],
+        default="target",
+    )
     args = parser.parse_args()
+    split = None if args.split == "none" else args.split
 
     output_dir = Path(args.output_dir)
     report_path = output_dir / "results.json"
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "method": args.method,
         "policy_server": f"{args.policy_host}:{args.policy_port}",
         "fixed_seed_tasks": [
-            {"task": name, "gym_id": gym_id, "seed_start": start, "count": count}
-            for name, gym_id, start, count in args.task
+            {
+                "task": name,
+                "gym_id": gym_id,
+                "seed_start": start,
+                "count": count,
+                "max_episode_steps": horizon or args.max_episode_steps,
+            }
+            for name, gym_id, start, count, horizon in args.task
         ],
-        "max_episode_steps": args.max_episode_steps,
+        "default_max_episode_steps": args.max_episode_steps,
         "n_action_steps": args.n_action_steps,
         "steps_per_render": args.steps_per_render,
+        "split": split,
         "episodes": [],
     }
     write_report(report_path, report)
@@ -216,7 +249,8 @@ def main() -> None:
     )
     if not client.ping():
         raise RuntimeError("policy server did not answer ping")
-    for task_name, gym_id, seed_start, count in args.task:
+    for task_name, gym_id, seed_start, count, task_horizon in args.task:
+        max_episode_steps = task_horizon or args.max_episode_steps
         seeds = list(range(seed_start, seed_start + count))
         for offset in range(0, len(seeds), args.batch_size):
             report["episodes"].extend(
@@ -227,9 +261,10 @@ def main() -> None:
                     gym_id,
                     seeds[offset : offset + args.batch_size],
                     output_dir,
-                    args.max_episode_steps,
+                    max_episode_steps,
                     args.n_action_steps,
                     args.steps_per_render,
+                    split,
                 )
             )
             report["episodes"].sort(key=lambda item: (item["task"], item["seed"]))
