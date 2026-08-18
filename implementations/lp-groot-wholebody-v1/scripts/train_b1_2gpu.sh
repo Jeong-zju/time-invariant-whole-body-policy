@@ -6,26 +6,24 @@ IMPL=${IMPL:-/workspace/time-invariant-whole-body-policy/implementations/lp-groo
 RUN_ROOT=${RUN_ROOT:-/workspace/lpwb-run}
 CHECKPOINT="$RUN_ROOT/checkpoints/grootn16-robocasa365/checkpoint-120000"
 OUTPUT_ROOT="$RUN_ROOT/outputs"
-RUN_NAME="b0_groot_command_seed20260818${LPWB_RUN_SUFFIX:-}"
+RUN_NAME="b1_pose_time_seed20260818${LPWB_RUN_SUFFIX:-}"
 RUN_DIR="$OUTPUT_ROOT/$RUN_NAME"
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-2,3}
 export PYTHONPATH="$IMPL/src:$IMPL/gr00t_patch:$GROOT"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-# The image's PyTorch wheel bundles NCCL 2.26, which stalls during communicator
-# initialization with this CUDA 13.3 driver. The host-provided NCCL 2.30.7 passed
-# the 100 MB two-rank broadcast gate on GPU pairs 0/1 and 2/3.
 export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libnccl.so.2.30.7${LD_PRELOAD:+:$LD_PRELOAD}
-export LPWB_METHOD=b0
+export LPWB_METHOD=b1
 export LPWB_SPLIT=train
 export LPWB_TRAIN_FRACTION=0.9
 export LPWB_SAMPLES_PER_EPISODE=${LPWB_SAMPLES_PER_EPISODE:-128}
 export LPWB_MAX_EPISODES=${LPWB_MAX_EPISODES:--1}
+export LPWB_B1_STATS_DIR="$RUN_ROOT/label_stats_b1"
 mkdir -p "$RUN_DIR"
 
 cd "$GROOT"
-"$GROOT/.venv/bin/torchrun" --nproc_per_node=2 --master_port=${MASTER_PORT:-29640} \
+"$GROOT/.venv/bin/torchrun" --nproc_per_node=2 --master_port=${MASTER_PORT:-29642} \
   "$IMPL/scripts/launch_finetune_lpwb.py" \
-  --method b0 \
+  --method b1 \
   --base-model-path "$CHECKPOINT" \
   --dataset-path "$RUN_ROOT/data/robocasa365/NavigateKitchen/lerobot" \
   --dataset-path "$RUN_ROOT/data/robocasa365/PickPlaceCounterToStove/lerobot" \

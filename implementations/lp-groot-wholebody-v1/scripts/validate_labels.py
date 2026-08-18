@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Timestamp/schema, reconstruction, event, and visualization gate for B2."""
+"""Timestamp/schema, reconstruction, event, and visualization gate for B1/B2."""
 
 from __future__ import annotations
 
@@ -23,7 +23,12 @@ from lpwb.geometry import (
     rotvec_to_quaternion,
     wrap_angle,
 )
-from lpwb.labels import LabelConfig, build_path_time_label, event_signature
+from lpwb.labels import (
+    LabelConfig,
+    build_path_time_label,
+    build_pose_time_label,
+    event_signature,
+)
 
 
 def interpolate_decoded(label, query_times: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -46,8 +51,8 @@ def interpolate_decoded(label, query_times: np.ndarray) -> tuple[np.ndarray, np.
     return np.asarray(base), np.asarray(eef_pos), np.asarray(eef_q)
 
 
-def validate_chunk(state, action, timestamp, config) -> dict[str, float | bool]:
-    label = build_path_time_label(state, action, timestamp, config)
+def validate_chunk(state, action, timestamp, config, label_builder) -> dict[str, float | bool]:
+    label = label_builder(state, action, timestamp, config)
     query_times = timestamp[1:] - timestamp[0]
     base_pred, eef_pos_pred, eef_q_pred = interpolate_decoded(label, query_times)
     base_true = local_base_pose(state[:, 0:3], state[:, 3:7])[1:]
@@ -85,6 +90,7 @@ def validate_chunk(state, action, timestamp, config) -> dict[str, float | bool]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--method", choices=["b1", "b2"], default="b2")
     parser.add_argument("--dataset", action="append", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--seed", type=int, default=20260818)
@@ -94,6 +100,9 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     config = LabelConfig(num_segments=32)
+    label_builder = (
+        build_pose_time_label if args.method == "b1" else build_path_time_label
+    )
     report: dict[str, dict] = {}
 
     for dataset_string in args.dataset:
@@ -135,9 +144,16 @@ def main() -> None:
                 state_chunk = state[start : start + 33]
                 action_chunk = action[start : start + 32]
                 time_chunk = timestamp[start : start + 33]
-                metrics.append(validate_chunk(state_chunk, action_chunk, time_chunk, config))
+                metrics.append(
+                    validate_chunk(
+                        state_chunk, action_chunk, time_chunk, config, label_builder
+                    )
+                )
                 if first_plot is None:
-                    first_plot = (state_chunk, build_path_time_label(state_chunk, action_chunk, time_chunk, config))
+                    first_plot = (
+                        state_chunk,
+                        label_builder(state_chunk, action_chunk, time_chunk, config),
+                    )
 
         aggregate = {}
         numeric_keys = [key for key, value in metrics[0].items() if not isinstance(value, bool)]
@@ -163,12 +179,22 @@ def main() -> None:
         base_true = local_base_pose(state_plot[:, 0:3], state_plot[:, 3:7])
         fig, axes = plt.subplots(1, 2, figsize=(10, 4))
         axes[0].plot(base_true[:, 0], base_true[:, 1], "k.-", label="measured")
-        axes[0].plot(label_plot.base_local[:, 0], label_plot.base_local[:, 1], "r.-", label="B2 anchors")
+        axes[0].plot(
+            label_plot.base_local[:, 0],
+            label_plot.base_local[:, 1],
+            "r.-",
+            label=f"{args.method.upper()} anchors",
+        )
         axes[0].axis("equal")
         axes[0].set_title(f"{task}: base local path")
         axes[0].legend()
         axes[1].plot(state_plot[:, 7], label="measured EEF-x")
-        axes[1].plot(label_plot.source_indices + 1, label_plot.eef_position_delta[:, 0] + state_plot[0, 7], ".", label="B2 anchors")
+        axes[1].plot(
+            label_plot.source_indices + 1,
+            label_plot.eef_position_delta[:, 0] + state_plot[0, 7],
+            ".",
+            label=f"{args.method.upper()} anchors",
+        )
         axes[1].set_title("EEF A-B-A/event-sensitive trace")
         axes[1].legend()
         fig.tight_layout()
@@ -190,7 +216,12 @@ def main() -> None:
         for key in ["gripper_events_preserved", "control_events_preserved", "finite"]:
             if not task_report[key]:
                 failures.append(f"{task}:{key}=false")
-    report["gate"] = {"passed": not failures, "failures": failures, "thresholds": thresholds}
+    report["gate"] = {
+        "method": args.method,
+        "passed": not failures,
+        "failures": failures,
+        "thresholds": thresholds,
+    }
     with (output_dir / "validation_report.json").open("w") as file:
         json.dump(report, file, indent=2)
     print(json.dumps(report["gate"], indent=2))

@@ -33,8 +33,9 @@ cd "$GROOT"
   --num-gpus 2 \
   --output-dir "$OUTPUT_ROOT" \
   --experiment-name "$RUN_NAME" \
-  --save-steps 500 \
-  --save-total-limit 4 \
+  --save-steps ${LPWB_SAVE_STEPS:-500} \
+  --save-total-limit ${LPWB_SAVE_TOTAL_LIMIT:-4} \
+  --save-only-model \
   --max-steps ${LPWB_MAX_STEPS:-3000} \
   --global-batch-size 16 \
   --gradient-accumulation-steps 8 \

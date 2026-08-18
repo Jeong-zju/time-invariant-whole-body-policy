@@ -263,6 +263,52 @@ def build_path_time_label(
     )
 
 
+def build_pose_time_label(
+    states: np.ndarray,
+    actions: np.ndarray,
+    timestamps: np.ndarray,
+    config: LabelConfig = LabelConfig(),
+) -> PathTimeLabel:
+    """Encode frame-aligned measured poses while preserving the original time grid.
+
+    B1 differs from B2 only in how the continuous anchors are selected: every
+    measured state at ``t1...tK`` becomes one anchor. No geometry-progress
+    resampling is performed, so an intermediate A-B-A state cannot disappear.
+    """
+    states = np.asarray(states, dtype=np.float64)
+    actions = np.asarray(actions, dtype=np.float64)
+    timestamps = np.asarray(timestamps, dtype=np.float64)
+    _validate_inputs(states, actions, timestamps, config)
+
+    base = local_base_pose(states[:, 0:3], states[:, 3:7])
+    eef_position = states[:, 7:10]
+    eef_quaternion = normalize_quaternion(states[:, 10:14])
+    durations = np.diff(timestamps)
+    changed = np.flatnonzero(
+        (np.abs(np.diff(actions[:, 11])) > 1e-8)
+        | (np.abs(np.diff(actions[:, 4])) > 1e-8)
+    ) + 1
+    eef_rotation_delta = np.vstack(
+        [
+            quaternion_to_rotvec(quaternion_between(eef_quaternion[0], quaternion))
+            for quaternion in eef_quaternion[1:]
+        ]
+    )
+    return PathTimeLabel(
+        base_local=base[1:].astype(np.float32),
+        eef_position_delta=(eef_position[1:] - eef_position[0]).astype(np.float32),
+        eef_rotation_delta=eef_rotation_delta.astype(np.float32),
+        gripper=actions[:, 11].astype(np.float32),
+        control_mode=actions[:, 4].astype(np.float32),
+        log_durations=np.log(np.maximum(durations, config.min_duration)).astype(
+            np.float32
+        ),
+        arrival_times=(timestamps[1:] - timestamps[0]).astype(np.float32),
+        source_indices=np.arange(config.num_segments, dtype=np.int64),
+        event_times=(timestamps[changed] - timestamps[0]).astype(np.float32),
+    )
+
+
 def event_signature(values: np.ndarray) -> tuple[float, ...]:
     values = np.asarray(values).reshape(-1)
     keep = np.concatenate([[True], np.abs(np.diff(values)) > 1e-8])

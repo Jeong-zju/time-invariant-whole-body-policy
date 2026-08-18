@@ -1,7 +1,17 @@
 import numpy as np
 
-from lpwb.geometry import quaternion_between, quaternion_to_rotvec, rotvec_to_quaternion
-from lpwb.labels import LabelConfig, build_path_time_label, event_signature
+from lpwb.geometry import (
+    local_base_pose,
+    quaternion_between,
+    quaternion_to_rotvec,
+    rotvec_to_quaternion,
+)
+from lpwb.labels import (
+    LabelConfig,
+    build_path_time_label,
+    build_pose_time_label,
+    event_signature,
+)
 
 
 def make_chunk():
@@ -66,3 +76,44 @@ def test_same_geometry_different_timing_changes_time_not_path():
     label_b = build_path_time_label(state_b, action_b, time_b)
     np.testing.assert_allclose(label_a.base_local, label_b.base_local, atol=1e-6)
     assert not np.allclose(label_a.durations, label_b.durations, atol=1e-3)
+
+
+def test_pose_time_is_exactly_frame_aligned():
+    state, action, timestamp = make_chunk()
+    progress = np.linspace(0.0, 1.0, 33) ** 2
+    state[:, 0] = progress
+    state[:, 7] = np.sin(np.linspace(0.0, 2.0 * np.pi, 33))
+    label = build_pose_time_label(state, action, timestamp)
+    np.testing.assert_allclose(
+        label.base_local,
+        local_base_pose(state[:, 0:3], state[:, 3:7])[1:],
+        atol=1e-7,
+    )
+    np.testing.assert_allclose(
+        label.eef_position_delta,
+        state[1:, 7:10] - state[0, 7:10],
+        atol=1e-7,
+    )
+    np.testing.assert_allclose(label.durations, 0.05, atol=1e-7)
+    np.testing.assert_array_equal(label.source_indices, np.arange(32))
+
+
+def test_pose_time_never_integrates_commands():
+    state, action, timestamp = make_chunk()
+    action[:, :4] = 1.0
+    action[:, 5:11] = 1.0
+    label = build_pose_time_label(state, action, timestamp)
+    np.testing.assert_allclose(label.base_local, 0.0)
+    np.testing.assert_allclose(label.eef_position_delta, 0.0)
+    np.testing.assert_allclose(label.eef_rotation_delta, 0.0)
+
+
+def test_pose_time_preserves_every_discrete_frame():
+    state, action, timestamp = make_chunk()
+    action[3:7, 11] = 1.0
+    action[7:10, 11] = -1.0
+    action[10:12, 11] = 1.0
+    action[5:9, 4] = -1.0
+    label = build_pose_time_label(state, action, timestamp)
+    np.testing.assert_array_equal(label.gripper, action[:, 11])
+    np.testing.assert_array_equal(label.control_mode, action[:, 4])

@@ -16,7 +16,12 @@ import numpy as np
 from gr00t.data.dataset.lerobot_episode_loader import LeRobotEpisodeLoader
 from gr00t.data.embodiment_tags import EmbodimentTag
 from gr00t.policy.gr00t_policy import Gr00tPolicy
-from lpwb.labels import LabelConfig, build_path_time_label, event_signature
+from lpwb.labels import (
+    LabelConfig,
+    build_path_time_label,
+    build_pose_time_label,
+    event_signature,
+)
 
 
 def selected_validation_episodes(total: int, seed: int, train_fraction: float) -> np.ndarray:
@@ -51,7 +56,7 @@ def b0_target(frame, start: int, action_keys: list[str]) -> dict[str, np.ndarray
     }
 
 
-def b2_target(frame, start: int) -> dict[str, np.ndarray]:
+def pose_target(frame, start: int, method: str) -> dict[str, np.ndarray]:
     state = np.column_stack(
         [
             np.vstack(frame["state.base_position"].iloc[start : start + 33]),
@@ -75,12 +80,13 @@ def b2_target(frame, start: int) -> dict[str, np.ndarray]:
         ]
     )
     timestamp = frame["lpwb.timestamp"].iloc[start : start + 33].to_numpy(dtype=np.float64)
-    return build_path_time_label(state, action, timestamp, LabelConfig()).action_dict()
+    builder = build_pose_time_label if method == "b1" else build_path_time_label
+    return builder(state, action, timestamp, LabelConfig()).action_dict()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--method", choices=["b0", "b2"], required=True)
+    parser.add_argument("--method", choices=["b0", "b1", "b2"], required=True)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--dataset", action="append", required=True)
     parser.add_argument("--output-dir", required=True)
@@ -101,7 +107,7 @@ def main() -> None:
         dataset = Path(dataset_string)
         task = dataset.parent.name
         loader_class = LeRobotEpisodeLoader
-        if args.method == "b2":
+        if args.method in ("b1", "b2"):
             from lpwb_dataset import PathTimeEpisodeLoader
 
             loader_class = PathTimeEpisodeLoader
@@ -119,7 +125,7 @@ def main() -> None:
             target = (
                 b0_target(frame, start, list(modality["action"].modality_keys))
                 if args.method == "b0"
-                else b2_target(frame, start)
+                else pose_target(frame, start, args.method)
             )
             group_metrics = {}
             for key in modality["action"].modality_keys:
@@ -134,7 +140,7 @@ def main() -> None:
                 "start": start,
                 "groups": group_metrics,
             }
-            if args.method == "b2":
+            if args.method in ("b1", "b2"):
                 record["path_metrics"] = {
                     "base_endpoint_translation_error_m": float(
                         np.linalg.norm(
@@ -170,7 +176,7 @@ def main() -> None:
                 metric: float(np.mean([record["groups"][key][metric] for record in task_records]))
                 for metric in ["mse", "mae"]
             }
-        if args.method == "b2":
+        if args.method in ("b1", "b2"):
             path_keys = task_records[0]["path_metrics"].keys()
             aggregate[task]["path_metrics"] = {}
             for key in path_keys:

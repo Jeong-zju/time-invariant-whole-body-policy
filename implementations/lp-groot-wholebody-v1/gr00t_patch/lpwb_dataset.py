@@ -1,4 +1,4 @@
-"""Episode-balanced GR00T dataset adapters for matched B0 and B2 training."""
+"""Episode-balanced GR00T dataset adapters for matched B0/B1/B2 training."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from gr00t.data.dataset.sharded_single_step_dataset import (
 )
 from gr00t.data.interfaces import ShardedDataset
 from gr00t.data.types import MessageType, VLAStepData
-from lpwb.labels import LabelConfig, build_path_time_label
+from lpwb.labels import LabelConfig, build_path_time_label, build_pose_time_label
 
 
 def _selected_episode_indices(num_episodes: int, seed: int) -> np.ndarray:
@@ -145,6 +145,9 @@ class PathTimeEpisodeLoader(LeRobotEpisodeLoader):
 class B2PathTimeDataset(SparseVideoShardMixin, EpisodeBalancedMixin, ShardedSingleStepDataset):
     """Replace the native command chunk with measured 32-anchor Path-Time labels."""
 
+    label_builder = staticmethod(build_path_time_label)
+    stats_environment_variable = "LPWB_B2_STATS_DIR"
+
     def __init__(self, *args, **kwargs):
         dataset_path = kwargs["dataset_path"]
         ShardedDataset.__init__(self, dataset_path)
@@ -203,7 +206,7 @@ class B2PathTimeDataset(SparseVideoShardMixin, EpisodeBalancedMixin, ShardedSing
             ]
         )
         timestamps = episode_data["lpwb.timestamp"].iloc[step_index : step_index + 33].to_numpy()
-        label = build_path_time_label(raw_state, raw_action, timestamps, self.label_config)
+        label = self.label_builder(raw_state, raw_action, timestamps, self.label_config)
         content = VLAStepData(
             images={
                 key: [episode_data[f"video.{key}"].iloc[step_index]]
@@ -218,11 +221,12 @@ class B2PathTimeDataset(SparseVideoShardMixin, EpisodeBalancedMixin, ShardedSing
 
     def get_dataset_statistics(self) -> dict:
         statistics = self.episode_loader.get_dataset_statistics()
-        stats_root = Path(os.environ["LPWB_B2_STATS_DIR"])
+        stats_root = Path(os.environ[self.stats_environment_variable])
         stats_path = stats_root / f"{Path(self.dataset_path).parent.name}.json"
         if not stats_path.exists():
             raise FileNotFoundError(
-                f"B2 label stats missing: {stats_path}; run scripts/build_label_stats.py"
+                f"{os.environ.get('LPWB_METHOD', 'pose').upper()} label stats missing: "
+                f"{stats_path}; run scripts/build_label_stats.py"
             )
         with stats_path.open() as file:
             statistics["action"] = json.load(file)["action"]
@@ -230,10 +234,19 @@ class B2PathTimeDataset(SparseVideoShardMixin, EpisodeBalancedMixin, ShardedSing
         return statistics
 
 
+class B1PoseTimeDataset(B2PathTimeDataset):
+    """Frame-aligned measured pose anchors with the original segment durations."""
+
+    label_builder = staticmethod(build_pose_time_label)
+    stats_environment_variable = "LPWB_B1_STATS_DIR"
+
+
 def selected_dataset_class():
     method = os.environ.get("LPWB_METHOD", "b0").lower()
     if method == "b0":
         return B0EpisodeBalancedDataset
+    if method == "b1":
+        return B1PoseTimeDataset
     if method == "b2":
         return B2PathTimeDataset
-    raise ValueError("LPWB_METHOD must be b0 or b2")
+    raise ValueError("LPWB_METHOD must be b0, b1, or b2")

@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from lpwb.labels import LabelConfig, build_path_time_label
+from lpwb.labels import LabelConfig, build_path_time_label, build_pose_time_label
 
 
 ACTION_KEYS = {
@@ -75,6 +75,7 @@ def arrays_from_frame(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.n
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--method", choices=["b1", "b2"], default="b2")
     parser.add_argument("--dataset", action="append", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--seed", type=int, default=20260818)
@@ -85,6 +86,9 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     config = LabelConfig(num_segments=32)
+    label_builder = (
+        build_pose_time_label if args.method == "b1" else build_path_time_label
+    )
 
     for dataset_string in args.dataset:
         dataset = Path(dataset_string)
@@ -115,7 +119,7 @@ def main() -> None:
                 replace=valid_starts < args.samples_per_episode,
             )
             for start in starts:
-                label = build_path_time_label(
+                label = label_builder(
                     state[start : start + 33],
                     action[start : start + 32],
                     timestamp[start : start + 33],
@@ -126,6 +130,7 @@ def main() -> None:
                 chunks += 1
         result = {
             "schema_version": 1,
+            "method": args.method,
             "dataset": str(dataset),
             "task": dataset.parent.name,
             "seed": args.seed,
@@ -137,7 +142,7 @@ def main() -> None:
         output_path = output_dir / f"{dataset.parent.name}.json"
         with output_path.open("w") as file:
             json.dump(result, file, indent=2)
-        print(f"wrote {output_path} from {chunks} B2 chunks")
+        print(f"wrote {output_path} from {chunks} {args.method.upper()} chunks")
 
 
 if __name__ == "__main__":
