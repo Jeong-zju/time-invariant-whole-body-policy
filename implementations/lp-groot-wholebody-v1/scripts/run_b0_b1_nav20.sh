@@ -23,8 +23,12 @@ if [[ -f "$OUTPUT_ROOT/B0_B1_NAV20_COMPLETE" ]]; then
   exit 0
 fi
 
+if [[ ! -f "$RUN_ROOT/robocasa365_setup/ROBOCASA365_SETUP_COMPLETE" ]]; then
+  echo "RoboCasa365 setup completion marker is missing" >&2
+  exit 1
+fi
+
 for path in \
-  "$RUN_ROOT/robocasa365_setup/ROBOCASA365_SETUP_COMPLETE" \
   "$B0_CHECKPOINT/config.json" \
   "$B0_CHECKPOINT/model.safetensors.index.json" \
   "$B1_CHECKPOINT/config.json" \
