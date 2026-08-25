@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "behavior-lp-act"
+version = "0.1.0"
+description = "LP-ACT V1 labels, reconstruction validation, and ACT baselines for BEHAVIOR 2026"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26",
+  "pyarrow>=17",
+  "matplotlib>=3.8",
+  "torch>=2.7",
+  "torchvision>=0.22",
+  "lerobot>=0.5.2",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120

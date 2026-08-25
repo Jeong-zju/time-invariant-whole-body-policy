@@ -1,61 +1,84 @@
-# Time-Invariant Whole-Body Policy
+# LP-ACT V1 for BEHAVIOR 2026
 
-面向移动操作机器人的时间重参数化不变全身策略研究。项目聚焦一个具体矛盾：底盘通常输出速度，而机械臂通常输出位置，导致全身动作表示与采集频率、推理频率和控制频率耦合。
+Phase-1 scope is deliberately single-task: both standard ACT and LP-ACT V1 use
+only `turning_on_radio`. The `bringing_water` and `sweeping_garage` assets remain
+installed for simulator coverage, but they are not part of training.
 
-本项目尝试把底盘与机械臂统一表示为相对当前机器人坐标系的几何路径，并将“怎么走”与“多快走”解耦。这里的“不变”特指**时间重参数化不变性**，不是经典 LTI 系统意义下的时不变，也不意味着机器人动力学与执行速度无关。
-
-## 研究目标
-
-- 构造局部 SE(2) 底盘位姿与机械臂关节位置组成的全身几何路径；
-- 按运动进度而非固定时间索引采样动作序列；
-- 验证空间原点不变性、time-warp 不变性和频率泛化；
-- 在动态约束下通过独立时间标定器安全执行预测路径；
-- 形成可复现实验、消融研究和最终论文。
-
-主基准暂定为 BEHAVIOR 2026，第一阶段使用 `turning_on_radio`、`bringing_water` 和 `sweeping_garage` 三个任务。详细技术路线与实验设计见 [研究方案](docs/time-invariant-whole-body-policy.md)，当前基础设施状态见 [Phase -1 部署记录](docs/phase-minus-1-deployment.md)。
-
-## 仓库结构
+This project is separate from the upstream BEHAVIOR-1K checkout. The first
+deliverable is an offline, deterministic validator:
 
 ```text
-configs/       可版本化的训练与评测配置
-docs/          研究设计、决策记录和部署记录
-experiments/   实验清单、结果索引和分析脚本
-paper/         论文大纲、图表与 LaTeX 源码
-src/           数据表示、模型适配和控制器实现
-tests/         单元测试与不变性回归测试
+30 Hz R1Pro trajectory
+  -> integrate measured robot-frame base qvel in SE(2)
+  -> combine local base pose with absolute trunk/arm targets and grippers
+  -> resample 32 whole-body path anchors with demonstrated arrival times
+  -> reconstruct 30 Hz commands
+  -> report geometry, joint, gripper, duration, and velocity errors
 ```
 
-原始数据、模型权重和运行产物不得提交到 Git。每项可报告实验必须记录配置、随机种子、代码 commit、数据 revision 和评测环境。
+No robot or simulator is required for these checks.
 
-## 路线图
+## Verified data conventions
 
-1. 完成官方 baseline 的闭环准入与指标采集。
-2. 建立原始 velocity action 与局部 SE(2) 路径 baseline。
-3. 实现 progress-based sampler 和 time-warp/frequency benchmark。
-4. 实现带动态约束的在线时间标定器。
-5. 完成多任务、多频率、多 time warp 的主实验与消融。
-6. 冻结实验协议，整理图表并撰写论文。
+- `action`: 23D
+  - `0:3`: robot-frame holonomic base command velocity `(vx, vy, wz)`
+  - `3:7`: absolute trunk targets
+  - `7:14`: absolute left-arm targets
+  - `14`: left-gripper command
+  - `15:22`: absolute right-arm targets
+  - `22`: right-gripper command
+- `observation.state`: 61D
+  - `0:3`: measured robot-frame base qvel
+  - `3:10`: measured left-arm qpos
+  - `28:35`: measured right-arm qpos
+  - `53:57`: measured trunk qpos
+- No odometry or localization pose is present in the released demonstration
+  rows. LP-ACT labels therefore describe an integrated measured-velocity path,
+  not ground-truth global motion.
+- The recorder pairs `obs[t]` with the action subsequently applied at `t`.
+  Its effect is measured in `obs[t+1]`. Consequently, the physical base motion
+  over interval `t -> t+1` uses `state[t+1, 0:3]`, while its command comparison
+  uses `action[t, 0:3]`. This one-frame alignment is explicit in code.
 
-## 协作
-
-稳定分支为 `main`，不直接在其上开发。工作分支统一使用：
+LP-ACT V1 target order is 24D:
 
 ```text
-<type>/<owner>/<topic>
+[relative base pose (3), original action[3:23] targets (20), log segment duration (1)]
 ```
 
-例如 `exp/ranpeng/time-warp-ablation`、`feat/jeong/progress-sampler`、`paper/ranpeng/method-section`。完整类型、负责人别名和 PR 规则见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+## Split
 
-## 当前状态
+The deterministic phase-1 split is by episode index:
 
-Phase -1 的数据、checkpoint 和 GPU 环境检查已完成；闭环 rollout 仍依赖 gated 模型授权与仿真许可确认。尚未进入正式模型实现阶段。
+- validation: `episode_index % 5 == 0` (40 episodes)
+- training: remaining 160 episodes
 
-## 已迁入的可执行基线
+This prevents frames from one episode appearing in both splits.
 
-`develop/rp` 分支加入了第一份经过训练与闭环验证的实现：
-[`implementations/lp-groot-base-v1`](implementations/lp-groot-base-v1/README.md)。
-它使用预训练 GR00T N1.6，只把移动底盘表示为 32 个局部 SE(2)
-path-time anchors，并通过标定后的执行适配器恢复 20 Hz 地盘命令。
+## Commands
 
-该实现是 **base-only representation baseline**，不是完整 whole-body 方法，也没有
-online adaptive phase controller。目录内 README 记录了算法定义、训练配置、验证结果、
+```bash
+python -m pytest
+python -m lp_act.validate_oracle \
+  --data-root /workspace/behavior-2026/demos \
+  --output-dir /workspace/behavior-2026/lp-act-v1/outputs/oracle_fixed_v2 \
+  --num-windows 512 \
+  --extent-mode fixed
+```
+
+The validator fits task-specific metric scales on the training episodes only,
+derives `L_sigma` as the median whole-body metric length covered by 32 raw
+intervals, evaluates held-out windows, and writes JSON plus diagnostic plots.
+
+## V1 terminal rule
+
+LP-ACT V1 uses a fixed metric extent `L_sigma`. A trajectory that reaches the
+extent is interpolated to end exactly at `L_sigma`; the overshooting part of the
+raw control interval is not included. If an episode or the four-second time cap
+ends first, the final partial path segment is retained as one valid anchor and
+all later anchors are padding. Padding is excluded from ACT's L1 loss.
+
+The held-out `oracle_fixed_v2` gate used 512 windows and obtained mean base
+translation RMSE `2.95311e-05 m`, mean yaw RMSE `1.55540e-04 rad`, mean joint
+target RMSE `4.19964e-04 rad`, and zero duration error. Seventy windows required
+padding; the other 442 used all 32 anchors.
